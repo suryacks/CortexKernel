@@ -6,10 +6,29 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 find_package(Threads REQUIRED)
 
+include(FetchContent)
+FetchContent_Declare(
+    Catch2
+    GIT_REPOSITORY https://github.com/catchorg/Catch2.git
+    GIT_TAG v3.7.1
+)
+FetchContent_MakeAvailable(Catch2)
+
 add_library(cortexkernel_core
     src/graph_store.cpp
+    src/json_translation.cpp
 )
 target_include_directories(cortexkernel_core PUBLIC include)
 
+
 add_executable(storage_server src/main.cpp)
 target_link_libraries(storage_server PRIVATE cortexkernel_core Threads::Threads)
+
+add_executable(unit_tests
+    tests/test_graph_store.cpp
+    tests/test_json_translation.cpp
+)
+target_link_libraries(unit_tests PRIVATE cortexkernel_core Catch2::Catch2WithMain)
+include(CTest)
+include(Catch)
+catch_discover_tests(unit_tests)
