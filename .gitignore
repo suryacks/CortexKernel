@@ -1,0 +1,7 @@
+*.db
+__pycache__/
+.venv/
+*.pyc
+build/
+.env
+k8s/secret.yaml
