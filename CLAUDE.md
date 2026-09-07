@@ -94,8 +94,15 @@ CortexKernel/
         semantic_index_bench.cpp — latency microbenchmark for
                                     SemanticIndex::most_similar() at increasing
                                     index sizes (DONE)
-      CMakeLists.txt              — FetchContent for Catch2 (DONE)
-      Dockerfile                  — multi-stage build (NOT STARTED)
+        sqlite_baseline_bench.cpp — naive SQLite self-join baseline for direct
+                                    contradiction detection, for comparison
+                                    against ContradictionDetector (DONE, see
+                                    Current status for the real numbers)
+      CMakeLists.txt              — FetchContent for Catch2, links system
+                                    libsqlite3 for the baseline bench (DONE)
+      Dockerfile / .dockerignore  — multi-stage build (DONE, built and run
+                                    locally with docker build/run — see
+                                    Current status)
     extraction/                  — Python LLM-based extraction pipeline (IN PROGRESS)
       Calls the Anthropic API to turn raw journal/chat text into typed
       Node/Edge candidates, posts them to the storage service's REST API.
@@ -105,19 +112,34 @@ CortexKernel/
                                     ranks detected contradictions by learned
                                     category value + confidence (DONE)
         test_bandit.py            — unittest suite for the bandit (DONE, passing)
+        persistence.py            — save_state()/load_state() for the bandit's
+                                    learned value estimates, as a JSON file
+                                    (DONE)
+        test_persistence.py       — unittest suite, including a real
+                                    save-restart-still-ranked-correctly
+                                    round trip (DONE, passing)
         service.py                — stdlib-only HTTP service (no framework
                                     dependency) exposing POST /rank and
-                                    POST /feedback over the bandit (DONE,
-                                    manually smoke-tested; nothing else in the
-                                    system calls it yet, and learned value
-                                    estimates are in-memory only — lost on
-                                    restart)
+                                    POST /feedback over the bandit, now
+                                    loading/saving state via persistence.py
+                                    (DONE, manually verified across a real
+                                    process restart — see Current status).
+                                    Nothing else in the system calls it yet.
     gateway/                     — planned: lightweight API gateway in front
       of storage + extraction, handling auth (API keys) and rate limiting.
       (PLANNED, Tier 3)
+  k8s/                            — Kubernetes manifests for a local `kind`
+                                    cluster
+    storage-deployment.yaml       — Deployment for the storage service, with
+                                    readiness/liveness probes against
+                                    /health (DONE, YAML-syntax validated
+                                    offline; NOT YET applied to a real
+                                    cluster — no `kind`/cluster available in
+                                    this session, see Current status)
+    storage-service.yaml          — ClusterIP Service exposing it (DONE, same
+                                    caveat as above)
   infra/
-    k8s/                         — raw Kubernetes manifests (NOT STARTED)
-    helm/                        — Helm chart replacing raw manifests (PLANNED)
+    helm/                         — Helm chart replacing raw manifests (PLANNED)
     terraform/                   — IaC for the `kind`/cloud cluster + any
       managed resources (Redis, object storage) (PLANNED)
   web/                            — React + TypeScript + D3.js graph
@@ -269,37 +291,64 @@ status.
   placeholder (hashed-trigram bag, no real model) — do not describe this
   as "using embeddings from a model" until it's swapped for a real one.
   Not yet called from anywhere in the request path.
-- `contradiction_bench.cpp`: microbenchmark added and run locally. **Real
-  finding, not hypothetical**: `find_direct_contradictions()` and
-  `find_value_behavior_mismatches()` are O(n²) *within* each
-  (subject, predicate) group, and at 10,000 edges spread over 20
-  predicates (~500 edges/group) that's ~380ms mean latency — up from
-  ~4.7ms at 1,000 edges. `classify_drift()` stays sub-millisecond at all
-  three sizes tested (100/1k/10k) since it only touches one group.
-  **This is a genuine, not-yet-fixed perf bottleneck** — the honest
-  before-benchmark-numbers, and the fix (bucket live edges by object_id
-  within a group instead of enumerating all pairs) is Tier 2 item 8
-  below. Don't claim this is fast until it's actually fixed and
-  re-benchmarked.
-- `EpsilonGreedyRanker` (`bandit.py`): now has a real `unittest` suite
-  (`test_bandit.py`, 6 tests, all passing) covering explore/exploit
-  ranking and incremental value updates.
-- `services/extraction/ranking/service.py`: a small stdlib-only
-  (`http.server`, no framework) HTTP wrapper around the bandit —
-  `POST /rank` and `POST /feedback`. Manually smoke-tested (started it,
-  curled both endpoints, confirmed ranking changed after feedback).
-  **Nothing else in the system calls this yet** — the storage service
-  doesn't know it exists, and there's no persistence for learned value
-  estimates across a restart of this process.
-- `semantic_index_bench.cpp`: added and run locally.
-  `SemanticIndex::most_similar()` stays in the low single-digit
-  milliseconds up to 10,000 embeddings (brute-force cosine, O(n) per
-  query) — no bottleneck found yet at these sizes, unlike the
-  contradiction detector above. Worth re-checking once the index is
-  actually populated from real data.
-- Full test suite: 74 C++ assertions across 26 test cases + 6 Python
+- **The O(n²)-per-group bottleneck is FIXED and re-benchmarked** —
+  `find_direct_contradictions()` and `find_value_behavior_mismatches()`
+  now bucket live edges by `object_id` within each (subject, predicate,
+  edge_class) group (single pass) instead of enumerating all pairs.
+  Real before/after numbers from `contradiction_bench.cpp` at 10,000
+  edges / 20 predicates: `find_direct_contradictions()` mean latency went
+  from **~381ms to ~8.0ms** (~47x), `find_value_behavior_mismatches()`
+  from **~384ms to ~8.2ms** (~47x). All 74 existing assertions still pass
+  unchanged — this was a pure complexity fix, not a behavior change, and
+  the existing tests (which only ever exercised 2-edge groups) couldn't
+  have caught the difference either way, so treat this as verified by
+  the benchmark, not by the unit tests. `classify_drift()` was already
+  fine and is untouched.
+- `sqlite_baseline_bench.cpp`: added and run. A naive SQLite self-join
+  over the same synthetic data (`SELECT ... FROM edges a JOIN edges b ON
+  ...`) takes **~284ms mean at 10,000 edges** — i.e. the optimized
+  in-memory `ContradictionDetector` (~8.0ms) is roughly **35x faster**
+  than the naive SQL approach at the same scale. This is a real,
+  reproducible number, not an estimate — rerun both benches to check it.
+- `EpsilonGreedyRanker` (`bandit.py`): has a real `unittest` suite
+  (`test_bandit.py`, 6 tests) covering explore/exploit ranking and
+  incremental value updates, **plus `export_state()`/`load_state()`**
+  for serializing learned per-category value estimates.
+- `services/extraction/ranking/persistence.py` +
+  `test_persistence.py`: JSON-file save/load for the bandit's state (3
+  tests, including a round-trip through an actual restored ranker
+  producing the same ranking as the original). Wired into `service.py`:
+  loads `bandit_state.json` at startup, saves after every
+  `POST /feedback`. **Verified with a real process restart**: fed one
+  piece of feedback, killed the process, restarted it, and a fresh
+  `POST /rank` call already reflected the learned preference — see
+  transcript in this session. State file is gitignored
+  (`bandit_state.json`).
+- `services/extraction/ranking/service.py`: still nothing else in the
+  system calls it — it's a standalone, manually-run script, not yet
+  containerized or supervised.
+- `semantic_index_bench.cpp`: `SemanticIndex::most_similar()` stays in
+  the low single-digit milliseconds up to 10,000 embeddings (brute-force
+  cosine, O(n) per query) — no bottleneck found yet at these sizes.
+  Worth re-checking once the index is actually populated from real data.
+- **Dockerfile for storage service: written AND verified working.**
+  `docker build` succeeds (multi-stage, Ubuntu 22.04 builder → slim
+  runtime, only the `storage_server` binary copied into the final
+  image), and the container was actually run: `/health`, `POST /nodes`,
+  `GET /nodes/:id`, and `/stats` all worked against the containerized
+  binary, and structured log lines appeared on `docker logs`. `.dockerignore`
+  excludes the host's `build/` directory, which is required — without it
+  the container would inherit a macOS-configured `CMakeCache.txt` and
+  fail to reconfigure on Linux.
+- `k8s/storage-deployment.yaml` and `k8s/storage-service.yaml`: written,
+  and YAML-syntax/structure validated offline (no cluster available in
+  this session — `kubectl` is installed but there's no `kind` cluster or
+  any other cluster to point it at, and `kubectl apply --dry-run=client`
+  still tries to contact a server for API discovery and fails without
+  one). **Not yet actually applied to a running cluster — don't claim
+  they're deploy-tested until that happens.**
+- Full test suite: 74 C++ assertions across 26 test cases + 9 Python
   unittest cases, all green.
-- Dockerfile for storage service: not started.
 - README: not started.
 - `services/extraction` now has real content (`ranking/`), but the
   extraction pipeline itself (calling the Anthropic API to produce
@@ -319,47 +368,53 @@ status.
    logger rather than spdlog (see Tech stack note on why)
 
 **Tier 2 — prove it with numbers (quant-dev / perf-engineering angle):**
-8. Fix the O(n²)-per-group bottleneck found by `contradiction_bench.cpp`:
-   bucket live edges within a (subject, predicate) group by `object_id`
-   first (single pass) so distinct-object contradictions are found in
-   roughly O(n) instead of enumerating all pairs; re-run the benchmark
-   and record the before/after numbers directly in this file and the
-   README. This is the single most resume-relevant "found it, measured
-   it, fixed it, proved it" story in the project — don't skip it for a
-   flashier item. **Still NOT STARTED — do this before adding more
-   features on top of the detector.**
+8. ~~Fix the O(n²)-per-group bottleneck found by `contradiction_bench.cpp`~~
+   — DONE, ~47x faster at 10k edges. Real before/after numbers in
+   Current status — this is the project's clearest "found it, measured
+   it, fixed it, proved it" story; keep it front and center in the README.
 9. ~~Extend the benchmark suite to cover `SemanticIndex::most_similar()`~~
    — DONE (`semantic_index_bench.cpp`); no bottleneck found up to 10k
    embeddings, re-check once real data populates the index.
-10. Benchmark/comparison writeup vs. a naive SQLite baseline — real
-    numbers (query latency, memory footprint, req/sec) for the README.
+10. ~~Benchmark vs. a naive SQLite baseline~~ — DONE
+    (`sqlite_baseline_bench.cpp`); optimized detector is ~35x faster than
+    a naive self-join at 10k edges. Still missing: memory-footprint and
+    req/sec numbers (this only measured query latency) — worth adding if
+    the README wants a fuller comparison table.
 11. Expose contradiction/drift results over the HTTP API
-    (`GET /contradictions`, `GET /drift/:subject_id/:predicate`).
+    (`GET /contradictions`, `GET /drift/:subject_id/:predicate`) — NOT
+    STARTED.
 
 **Tier 3 — distributed systems, ML infra, and RL integration:**
 12. Extraction service: Python, calls the Anthropic API for entity/relation
     extraction, exposes its own HTTP API, containerized with the same
-    multi-stage Docker pattern as storage.
+    multi-stage Docker pattern as storage. NOT STARTED (needs an API key
+    this session doesn't have — do this with Surya present to supply one).
 13. Swap `embed_text()`'s hashed-trigram placeholder for real embeddings
     (an actual embedding model or API call) and wire `SemanticIndex` into
     `ContradictionDetector` so semantically-equivalent claims (not just
     exact predicate/object string matches) get flagged — this is what
     turns the vector index from a standalone module into an actual
-    ML-infra feature of the product.
-14. Actually call `services/extraction/ranking/service.py`'s
-    `POST /rank` and `POST /feedback` from somewhere real (the future
-    extraction service or a UI), instead of curling it by hand; persist
-    the bandit's learned value estimates (reuse the WAL pattern or a
-    small JSON snapshot) so learning survives a restart; add a
-    supervisor/systemd/Docker entry so it isn't a manually-started script.
+    ML-infra feature of the product. NOT STARTED (same API-key blocker).
+14. ~~Persist the bandit's learned value estimates~~ — DONE
+    (`persistence.py`, wired into `service.py`, verified across a real
+    restart). Still open from this item: actually call
+    `service.py`'s `POST /rank`/`POST /feedback` from somewhere real
+    (the future extraction service or a UI) instead of curling it by
+    hand, and add a supervisor/systemd/Docker entry so it isn't a
+    manually-started script.
 15. gRPC + Protocol Buffers between extraction and storage (in addition
     to the public REST API).
 16. Redis: caching layer for storage's hot read paths, plus an event
     stream (Redis Streams/NATS) for async extraction → storage ingestion.
 17. Lightweight API gateway in front of both services: API-key auth,
     rate limiting.
-18. `kind` cluster + Kubernetes manifests deploying storage + extraction
-    + gateway as separate pods talking over k8s Services.
+18. `kind` cluster set up locally + `kubectl apply` of
+    `k8s/storage-deployment.yaml` and `k8s/storage-service.yaml` (written
+    and YAML-validated already, see Current status) against a real
+    cluster; then add extraction + gateway manifests once those services
+    exist. **Partially done**: the storage manifests exist but are
+    unverified against an actual cluster — installing `kind` was out of
+    scope for this session.
 19. Helm chart packaging (replacing raw k8s YAML).
 20. Terraform for cluster/resource provisioning.
 21. Prometheus metrics endpoint + Grafana dashboard + OpenTelemetry tracing

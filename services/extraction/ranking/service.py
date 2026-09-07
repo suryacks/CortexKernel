@@ -2,8 +2,12 @@ import json
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from bandit import Contradiction, EpsilonGreedyRanker
+from persistence import load_state, save_state
+
+STATE_PATH = "bandit_state.json"
 
 ranker = EpsilonGreedyRanker(epsilon=0.1)
+load_state(ranker, STATE_PATH)
 
 
 class RankingHandler(BaseHTTPRequestHandler):
@@ -55,6 +59,7 @@ class RankingHandler(BaseHTTPRequestHandler):
             return
 
         ranker.record_feedback(category, reward)
+        save_state(ranker, STATE_PATH)
         self._send_json(200, {"value_estimates": ranker.value_estimates()})
 
     def log_message(self, format: str, *args) -> None:

@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: cortexkernel-storage
+spec:
+  selector:
+    app: cortexkernel-storage
+  ports:
+    - port: 8080
+      targetPort: 8080
+  type: ClusterIP

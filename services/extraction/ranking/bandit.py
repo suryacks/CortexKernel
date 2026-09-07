@@ -56,3 +56,15 @@ class EpsilonGreedyRanker:
 
     def value_estimates(self) -> Dict[str, float]:
         return {category: stats.value_estimate for category, stats in self._arms.items()}
+
+    def export_state(self) -> Dict[str, Dict[str, float]]:
+        return {
+            category: {"pulls": stats.pulls, "value_estimate": stats.value_estimate}
+            for category, stats in self._arms.items()
+        }
+
+    def load_state(self, state: Dict[str, Dict[str, float]]) -> None:
+        for category, values in state.items():
+            arm = self._arm(category)
+            arm.pulls = int(values["pulls"])
+            arm.value_estimate = float(values["value_estimate"])

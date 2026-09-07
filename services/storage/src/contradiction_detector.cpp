@@ -4,6 +4,7 @@
 #include <map>
 #include <set>
 #include <stdexcept>
+#include <unordered_map>
 
 namespace kg {
 
@@ -31,9 +32,12 @@ std::map<std::pair<std::string, std::string>, std::vector<const Edge*>> group_by
     return groups;
 }
 
-bool is_value_behavior_pair(EdgeClass a, EdgeClass b) {
-    return (a == EdgeClass::StatedValue && b == EdgeClass::BehaviorEvidence) ||
-           (a == EdgeClass::BehaviorEvidence && b == EdgeClass::StatedValue);
+std::unordered_map<std::string, const Edge*> first_edge_per_object(const std::vector<const Edge*>& edges) {
+    std::unordered_map<std::string, const Edge*> result;
+    for (const Edge* edge : edges) {
+        result.emplace(edge->object_id, edge);
+    }
+    return result;
 }
 
 }
@@ -41,13 +45,19 @@ bool is_value_behavior_pair(EdgeClass a, EdgeClass b) {
 std::vector<Contradiction> ContradictionDetector::find_direct_contradictions() const {
     std::vector<Contradiction> result;
     for (const auto& entry : group_by_subject_predicate(store_.live_edges())) {
-        const auto& edges = entry.second;
-        for (size_t i = 0; i < edges.size(); ++i) {
-            for (size_t j = i + 1; j < edges.size(); ++j) {
-                if (edges[i]->object_id != edges[j]->object_id &&
-                    edges[i]->edge_class == edges[j]->edge_class) {
-                    result.push_back({entry.first.first, entry.first.second, edges[i], edges[j]});
-                }
+        std::unordered_map<EdgeClass, std::vector<const Edge*>> by_class;
+        for (const Edge* edge : entry.second) {
+            by_class[edge->edge_class].push_back(edge);
+        }
+        for (const auto& class_entry : by_class) {
+            auto reps = first_edge_per_object(class_entry.second);
+            if (reps.size() < 2) {
+                continue;
+            }
+            auto it = reps.begin();
+            const Edge* anchor = it->second;
+            for (++it; it != reps.end(); ++it) {
+                result.push_back({entry.first.first, entry.first.second, anchor, it->second});
             }
         }
     }
@@ -57,12 +67,24 @@ std::vector<Contradiction> ContradictionDetector::find_direct_contradictions() c
 std::vector<Contradiction> ContradictionDetector::find_value_behavior_mismatches() const {
     std::vector<Contradiction> result;
     for (const auto& entry : group_by_subject_predicate(store_.live_edges())) {
-        const auto& edges = entry.second;
-        for (size_t i = 0; i < edges.size(); ++i) {
-            for (size_t j = i + 1; j < edges.size(); ++j) {
-                if (edges[i]->object_id != edges[j]->object_id &&
-                    is_value_behavior_pair(edges[i]->edge_class, edges[j]->edge_class)) {
-                    result.push_back({entry.first.first, entry.first.second, edges[i], edges[j]});
+        std::vector<const Edge*> stated;
+        std::vector<const Edge*> behavior;
+        for (const Edge* edge : entry.second) {
+            if (edge->edge_class == EdgeClass::StatedValue) {
+                stated.push_back(edge);
+            } else if (edge->edge_class == EdgeClass::BehaviorEvidence) {
+                behavior.push_back(edge);
+            }
+        }
+        if (stated.empty() || behavior.empty()) {
+            continue;
+        }
+        auto stated_reps = first_edge_per_object(stated);
+        auto behavior_reps = first_edge_per_object(behavior);
+        for (const auto& stated_rep : stated_reps) {
+            for (const auto& behavior_rep : behavior_reps) {
+                if (stated_rep.first != behavior_rep.first) {
+                    result.push_back({entry.first.first, entry.first.second, stated_rep.second, behavior_rep.second});
                 }
             }
         }

@@ -34,6 +34,10 @@ target_link_libraries(contradiction_bench PRIVATE cortexkernel_core)
 add_executable(semantic_index_bench bench/semantic_index_bench.cpp)
 target_link_libraries(semantic_index_bench PRIVATE cortexkernel_core)
 
+find_library(SQLITE3_LIBRARY sqlite3 REQUIRED)
+add_executable(sqlite_baseline_bench bench/sqlite_baseline_bench.cpp)
+target_link_libraries(sqlite_baseline_bench PRIVATE ${SQLITE3_LIBRARY})
+
 add_executable(unit_tests
     tests/test_graph_store.cpp
     tests/test_json_translation.cpp

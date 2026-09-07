@@ -1,0 +1,34 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cortexkernel-storage
+  labels:
+    app: cortexkernel-storage
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: cortexkernel-storage
+  template:
+    metadata:
+      labels:
+        app: cortexkernel-storage
+    spec:
+      containers:
+        - name: storage
+          image: cortexkernel-storage:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
