@@ -61,17 +61,19 @@ CortexKernel/
         contradiction_detector.hpp — direct-contradiction, value/behavior
                                       mismatch, and drift-state detectors (DONE)
         json_translation.hpp     — DTO layer, JSON <-> C++ types (DONE)
+        persistence.hpp          — WAL-based durability for GraphStore (DONE, not wired into main.cpp yet)
         httplib.h                — vendored single-header HTTP library
         json.hpp                 — vendored nlohmann/json single header
       src/
         graph_store.cpp
         contradiction_detector.cpp
         json_translation.cpp
-        main.cpp                 — HTTP server entrypoint (DONE)
+        persistence.cpp
+        main.cpp                 — HTTP server entrypoint (DONE, still in-memory only)
       tests/
         test_graph_store.cpp      — Catch2 unit tests (DONE, passing)
         test_json_translation.cpp — Catch2 unit tests (DONE, passing)
-        test_contradiction_detector.cpp — NOT STARTED
+        test_contradiction_detector.cpp — Catch2 unit tests (DONE, passing)
       CMakeLists.txt              — FetchContent for Catch2 (DONE)
       Dockerfile                  — multi-stage build (NOT STARTED)
     extraction/                  — Python LLM-based extraction pipeline (NOT STARTED)
@@ -151,6 +153,13 @@ status.
   only exposes raw edge access (`live_edges()`, `all_edges()`, etc.);
   detection logic is a separate, independently testable layer on top.
   Same separation-of-concerns reasoning as the DTO layer.
+- **Persistence is a write-ahead log, decoupled from `GraphStore`**
+  (`persistence.hpp/cpp`): `WalWriter` appends one JSON-line op
+  (`add_node`/`add_edge`/`invalidate_edge`) per mutation, and
+  `load_graph_store_from_wal()` replays a log into a fresh `GraphStore` on
+  startup. `GraphStore` itself stays a pure in-memory structure with no
+  knowledge of durability — same layering principle as the DTO and
+  contradiction-detection modules. Not yet wired into `main.cpp`.
 - **Fail loud on bad input**: JSON parsing/translation throws on missing
   fields or invalid enum strings, caught at the HTTP layer and converted
   to a 400 with a clear error message. Don't silently default or coerce
@@ -174,10 +183,16 @@ status.
   tested (Catch2), CI green on GitHub Actions.
 - `ContradictionDetector`: direct-contradiction detection,
   value/behavior mismatch detection, and five-state drift classification
-  (HELD / REFINED / CONTRADICTED / BOTH / SUPERSEDED) implemented and
-  compiling against the existing `GraphStore`. **Not yet unit tested —
-  next session should add `test_contradiction_detector.cpp` before
-  building anything else on top of it.**
+  (HELD / REFINED / CONTRADICTED / BOTH / SUPERSEDED), fully unit tested
+  (`test_contradiction_detector.cpp`, 11 test cases, all passing).
+- `WalWriter` / `load_graph_store_from_wal()`: write-ahead-log durability
+  layer implemented and compiling, **but not yet wired into `main.cpp`** —
+  the HTTP server still uses a plain in-memory `GraphStore` with no
+  persistence on restart. Wiring it in (construct a `WalWriter` in
+  `main()`, call `record_*` after every mutating endpoint, call
+  `load_graph_store_from_wal()` at startup instead of a fresh
+  `GraphStore`) is the next concrete step, not yet done.
+- Full test suite: 48 assertions across 19 test cases, all green.
 - Dockerfile for storage service: not started.
 - README: not started.
 - Nothing outside `services/storage` started yet.
@@ -187,39 +202,39 @@ status.
 **Tier 1 — finish the storage service:**
 1. ~~Real JSON API~~ — DONE
 2. ~~Unit tests + CI~~ — DONE
-3. ~~Contradiction-detection core (direct + value/behavior + drift)~~ —
-   DONE, needs tests
-4. Catch2 tests for `ContradictionDetector` — NOT STARTED
-5. Structured logging (spdlog) replacing `std::cout` in main.cpp — NOT STARTED
-6. Persistence — durable storage so `GraphStore` survives restarts
-   (currently pure in-memory) — NOT STARTED
+3. ~~Contradiction-detection core (direct + value/behavior + drift)~~ — DONE
+4. ~~Catch2 tests for `ContradictionDetector`~~ — DONE
+5. ~~WAL-based persistence module (`WalWriter` + replay)~~ — DONE
+6. Wire persistence into `main.cpp` (write on every mutation, load on
+   startup) — NOT STARTED
+7. Structured logging (spdlog) replacing `std::cout` in main.cpp — NOT STARTED
 
 **Tier 2 — prove it with numbers:**
-7. Benchmark/comparison writeup vs. a naive SQLite baseline — real
+8. Benchmark/comparison writeup vs. a naive SQLite baseline — real
    numbers (query latency, memory footprint, req/sec) for the README.
-8. Expose contradiction/drift results over the HTTP API
+9. Expose contradiction/drift results over the HTTP API
    (`GET /contradictions`, `GET /drift/:subject_id/:predicate`).
 
 **Tier 3 — distributed systems + infra polish:**
-9. Extraction service: Python, calls the Anthropic API for entity/relation
-   extraction, exposes its own HTTP API, containerized with the same
-   multi-stage Docker pattern as storage.
-10. gRPC + Protocol Buffers between extraction and storage (in addition
+10. Extraction service: Python, calls the Anthropic API for entity/relation
+    extraction, exposes its own HTTP API, containerized with the same
+    multi-stage Docker pattern as storage.
+11. gRPC + Protocol Buffers between extraction and storage (in addition
     to the public REST API).
-11. Redis: caching layer for storage's hot read paths, plus an event
+12. Redis: caching layer for storage's hot read paths, plus an event
     stream (Redis Streams/NATS) for async extraction → storage ingestion.
-12. Lightweight API gateway in front of both services: API-key auth,
+13. Lightweight API gateway in front of both services: API-key auth,
     rate limiting.
-13. `kind` cluster + Kubernetes manifests deploying storage + extraction
+14. `kind` cluster + Kubernetes manifests deploying storage + extraction
     + gateway as separate pods talking over k8s Services.
-14. Helm chart packaging (replacing raw k8s YAML).
-15. Terraform for cluster/resource provisioning.
-16. Prometheus metrics endpoint + Grafana dashboard + OpenTelemetry tracing.
+15. Helm chart packaging (replacing raw k8s YAML).
+16. Terraform for cluster/resource provisioning.
+17. Prometheus metrics endpoint + Grafana dashboard + OpenTelemetry tracing.
 
 **Tier 4 — presentation, do last:**
-17. React + TypeScript + D3.js web UI visualizing the graph and
+18. React + TypeScript + D3.js web UI visualizing the graph and
     surfacing detected contradictions.
-18. Full README rewrite: architecture diagram (Mermaid), badges, "why I
+19. Full README rewrite: architecture diagram (Mermaid), badges, "why I
     built this," benchmark numbers front and center.
 
 ## Working conventions for Claude Code sessions on this repo

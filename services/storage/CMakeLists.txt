@@ -18,6 +18,7 @@ add_library(cortexkernel_core
     src/graph_store.cpp
     src/json_translation.cpp
     src/contradiction_detector.cpp
+    src/persistence.cpp
 )
 target_include_directories(cortexkernel_core PUBLIC include)
 
@@ -28,6 +29,7 @@ target_link_libraries(storage_server PRIVATE cortexkernel_core Threads::Threads)
 add_executable(unit_tests
     tests/test_graph_store.cpp
     tests/test_json_translation.cpp
+    tests/test_contradiction_detector.cpp
 )
 target_link_libraries(unit_tests PRIVATE cortexkernel_core Catch2::Catch2WithMain)
 include(CTest)
