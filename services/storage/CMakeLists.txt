@@ -20,6 +20,7 @@ add_library(cortexkernel_core
     src/contradiction_detector.cpp
     src/persistence.cpp
     src/semantic_index.cpp
+    src/logger.cpp
 )
 target_include_directories(cortexkernel_core PUBLIC include)
 
@@ -29,6 +30,9 @@ target_link_libraries(storage_server PRIVATE cortexkernel_core Threads::Threads)
 
 add_executable(contradiction_bench bench/contradiction_bench.cpp)
 target_link_libraries(contradiction_bench PRIVATE cortexkernel_core)
+
+add_executable(semantic_index_bench bench/semantic_index_bench.cpp)
+target_link_libraries(semantic_index_bench PRIVATE cortexkernel_core)
 
 add_executable(unit_tests
     tests/test_graph_store.cpp

@@ -66,8 +66,9 @@ CortexKernel/
         contradiction_detector.hpp — direct-contradiction, value/behavior
                                       mismatch, and drift-state detectors (DONE)
         json_translation.hpp     — DTO layer, JSON <-> C++ types (DONE)
-        persistence.hpp          — WAL-based durability for GraphStore (DONE, not wired into main.cpp yet)
+        persistence.hpp          — WAL-based durability for GraphStore (DONE, wired into main.cpp)
         semantic_index.hpp       — embedding + cosine-similarity vector index (DONE, placeholder embeddings)
+        logger.hpp               — dependency-free structured logger (DONE, see note below on spdlog)
         httplib.h                — vendored single-header HTTP library
         json.hpp                 — vendored nlohmann/json single header
       src/
@@ -76,7 +77,11 @@ CortexKernel/
         json_translation.cpp
         persistence.cpp
         semantic_index.cpp
-        main.cpp                 — HTTP server entrypoint (DONE, still in-memory only)
+        logger.cpp
+        main.cpp                 — HTTP server entrypoint (DONE): loads GraphStore
+                                    from the WAL at startup, records every
+                                    POST /nodes and POST /edges to the WAL, and
+                                    logs structured startup/error events
       tests/
         test_graph_store.cpp      — Catch2 unit tests (DONE, passing)
         test_json_translation.cpp — Catch2 unit tests (DONE, passing)
@@ -86,6 +91,9 @@ CortexKernel/
         contradiction_bench.cpp  — latency/throughput microbenchmark for
                                     ContradictionDetector at increasing graph
                                     sizes (DONE, see Current status for findings)
+        semantic_index_bench.cpp — latency microbenchmark for
+                                    SemanticIndex::most_similar() at increasing
+                                    index sizes (DONE)
       CMakeLists.txt              — FetchContent for Catch2 (DONE)
       Dockerfile                  — multi-stage build (NOT STARTED)
     extraction/                  — Python LLM-based extraction pipeline (IN PROGRESS)
@@ -95,9 +103,15 @@ CortexKernel/
       ranking/
         bandit.py                — epsilon-greedy contextual bandit (RL) that
                                     ranks detected contradictions by learned
-                                    category value + confidence (DONE, no
-                                    caller wired up yet, no persistence of
-                                    learned state across restarts)
+                                    category value + confidence (DONE)
+        test_bandit.py            — unittest suite for the bandit (DONE, passing)
+        service.py                — stdlib-only HTTP service (no framework
+                                    dependency) exposing POST /rank and
+                                    POST /feedback over the bandit (DONE,
+                                    manually smoke-tested; nothing else in the
+                                    system calls it yet, and learned value
+                                    estimates are in-memory only — lost on
+                                    restart)
     gateway/                     — planned: lightweight API gateway in front
       of storage + extraction, handling auth (API keys) and rate limiting.
       (PLANNED, Tier 3)
@@ -130,9 +144,14 @@ CortexKernel/
   `/stats`) with explicit invalidation on writes.
 - **ML/NLP (planned)**: Python extraction service using the Anthropic API
   for structured entity/relation extraction from unstructured text.
-- **Observability (planned)**: structured logging (spdlog) replacing
-  `std::cout`, Prometheus metrics endpoint, Grafana dashboard,
-  OpenTelemetry tracing across service calls.
+- **Observability**: structured key=value logging is DONE
+  (`logger.hpp/cpp`) and wired into `main.cpp` — but it's a small
+  dependency-free logger, not spdlog. spdlog was the original plan; it
+  was skipped to avoid adding a new FetchContent dependency without a
+  chance to verify network reliability in a given session. Swapping the
+  backend for spdlog later is a drop-in change since callers only see
+  `kg::log::info/warn/error`. Prometheus metrics endpoint, Grafana
+  dashboard, and OpenTelemetry tracing remain PLANNED (Tier 3).
 - **Containerization**: multi-stage Dockerfiles per service (build stage
   with full toolchain, slim runtime stage).
 - **Orchestration**: Kubernetes manifests for a local `kind` cluster,
@@ -233,13 +252,18 @@ status.
   value/behavior mismatch detection, and five-state drift classification
   (HELD / REFINED / CONTRADICTED / BOTH / SUPERSEDED), fully unit tested
   (`test_contradiction_detector.cpp`, 11 test cases, all passing).
-- `WalWriter` / `load_graph_store_from_wal()`: write-ahead-log durability
-  layer implemented and compiling, **but not yet wired into `main.cpp`** —
-  the HTTP server still uses a plain in-memory `GraphStore` with no
-  persistence on restart. Wiring it in (construct a `WalWriter` in
-  `main()`, call `record_*` after every mutating endpoint, call
-  `load_graph_store_from_wal()` at startup instead of a fresh
-  `GraphStore`) is the next concrete step, not yet done.
+- `WalWriter` / `load_graph_store_from_wal()`: **wired into `main.cpp`
+  and manually verified end-to-end** — `main()` now loads `GraphStore`
+  from `storage.wal` at startup and records every `POST /nodes` and
+  `POST /edges` to it. Verified by hand: posted a node, killed the
+  server, restarted it, `GET /nodes/:id` still returned it. There is no
+  HTTP endpoint that invalidates an edge yet, so `record_invalidate_edge`
+  is implemented but has no caller.
+- `logger.hpp/cpp`: dependency-free structured logger, wired into
+  `main.cpp` in place of the old `std::cout` line — startup and
+  request-rejection events now emit `time=... level=... msg="..." key="value"`
+  lines. Verified by hand (see log output in this session). Not spdlog —
+  see the Tech stack section for why.
 - `SemanticIndex` / `embed_text()` / `cosine_similarity()`: implemented and
   unit tested (`test_semantic_index.cpp`). `embed_text()` is explicitly a
   placeholder (hashed-trigram bag, no real model) — do not describe this
@@ -257,15 +281,29 @@ status.
   within a group instead of enumerating all pairs) is Tier 2 item 8
   below. Don't claim this is fast until it's actually fixed and
   re-benchmarked.
-- `EpsilonGreedyRanker` (`bandit.py`): implemented, smoke-tested by hand
-  (not yet a pytest suite), not wired to any real feedback source, and
-  learned value estimates are in-memory only (lost on process restart —
-  no persistence for the bandit's learned state yet).
-- Full test suite: 74 assertions across 26 C++ test cases, all green.
+- `EpsilonGreedyRanker` (`bandit.py`): now has a real `unittest` suite
+  (`test_bandit.py`, 6 tests, all passing) covering explore/exploit
+  ranking and incremental value updates.
+- `services/extraction/ranking/service.py`: a small stdlib-only
+  (`http.server`, no framework) HTTP wrapper around the bandit —
+  `POST /rank` and `POST /feedback`. Manually smoke-tested (started it,
+  curled both endpoints, confirmed ranking changed after feedback).
+  **Nothing else in the system calls this yet** — the storage service
+  doesn't know it exists, and there's no persistence for learned value
+  estimates across a restart of this process.
+- `semantic_index_bench.cpp`: added and run locally.
+  `SemanticIndex::most_similar()` stays in the low single-digit
+  milliseconds up to 10,000 embeddings (brute-force cosine, O(n) per
+  query) — no bottleneck found yet at these sizes, unlike the
+  contradiction detector above. Worth re-checking once the index is
+  actually populated from real data.
+- Full test suite: 74 C++ assertions across 26 test cases + 6 Python
+  unittest cases, all green.
 - Dockerfile for storage service: not started.
 - README: not started.
-- Nothing outside `services/storage` and the one new `ranking/bandit.py`
-  file started yet.
+- `services/extraction` now has real content (`ranking/`), but the
+  extraction pipeline itself (calling the Anthropic API to produce
+  Node/Edge candidates) is still not started.
 
 ## Roadmap (prioritized, in order)
 
@@ -275,9 +313,10 @@ status.
 3. ~~Contradiction-detection core (direct + value/behavior + drift)~~ — DONE
 4. ~~Catch2 tests for `ContradictionDetector`~~ — DONE
 5. ~~WAL-based persistence module (`WalWriter` + replay)~~ — DONE
-6. Wire persistence into `main.cpp` (write on every mutation, load on
-   startup) — NOT STARTED
-7. Structured logging (spdlog) replacing `std::cout` in main.cpp — NOT STARTED
+6. ~~Wire persistence into `main.cpp`~~ — DONE, verified with a real
+   restart test (see Current status)
+7. ~~Structured logging wired into `main.cpp`~~ — DONE, dependency-free
+   logger rather than spdlog (see Tech stack note on why)
 
 **Tier 2 — prove it with numbers (quant-dev / perf-engineering angle):**
 8. Fix the O(n²)-per-group bottleneck found by `contradiction_bench.cpp`:
@@ -287,11 +326,11 @@ status.
    and record the before/after numbers directly in this file and the
    README. This is the single most resume-relevant "found it, measured
    it, fixed it, proved it" story in the project — don't skip it for a
-   flashier item.
-9. Extend `contradiction_bench.cpp` (or add a sibling benchmark) to cover
-   `SemanticIndex::most_similar()` at increasing index sizes, since
-   brute-force cosine similarity is also O(n) per query and will need a
-   real ANN structure (e.g. HNSW) once the index is large enough to matter.
+   flashier item. **Still NOT STARTED — do this before adding more
+   features on top of the detector.**
+9. ~~Extend the benchmark suite to cover `SemanticIndex::most_similar()`~~
+   — DONE (`semantic_index_bench.cpp`); no bottleneck found up to 10k
+   embeddings, re-check once real data populates the index.
 10. Benchmark/comparison writeup vs. a naive SQLite baseline — real
     numbers (query latency, memory footprint, req/sec) for the README.
 11. Expose contradiction/drift results over the HTTP API
@@ -307,12 +346,12 @@ status.
     exact predicate/object string matches) get flagged — this is what
     turns the vector index from a standalone module into an actual
     ML-infra feature of the product.
-14. Wire `EpsilonGreedyRanker` into the storage API: an endpoint that
-    returns contradictions pre-ranked by the bandit, plus a
-    `POST /feedback` endpoint that calls `record_feedback()` so the
-    ranker actually learns from real usage instead of hand-fed rewards;
-    persist the bandit's learned value estimates (reuse the WAL pattern
-    or a small JSON snapshot) so learning survives a restart.
+14. Actually call `services/extraction/ranking/service.py`'s
+    `POST /rank` and `POST /feedback` from somewhere real (the future
+    extraction service or a UI), instead of curling it by hand; persist
+    the bandit's learned value estimates (reuse the WAL pattern or a
+    small JSON snapshot) so learning survives a restart; add a
+    supervisor/systemd/Docker entry so it isn't a manually-started script.
 15. gRPC + Protocol Buffers between extraction and storage (in addition
     to the public REST API).
 16. Redis: caching layer for storage's hot read paths, plus an event
@@ -342,8 +381,11 @@ status.
 - Every C++ addition needs: the header, the implementation, and a Catch2
   test file, in that order, before moving to the next piece.
 - No comments in code — see "Owner's background and working style" above.
+- Every Python addition needs a matching `unittest`-based test file
+  (stdlib only, no pytest) in the same directory, run with
+  `python3 -m unittest <file>.py`.
 - Run the full test suite (`cmake --build build && ./build/unit_tests`)
-  before considering any change done.
+  before considering any change done, plus any Python test files touched.
 - Commit after each working, tested unit — don't batch multiple
   unrelated changes into one commit. Don't push unless explicitly asked.
 - If a design decision isn't covered above and isn't obvious, stop and

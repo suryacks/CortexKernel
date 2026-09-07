@@ -1,6 +1,8 @@
 #include "../include/graph_store.hpp"
 #include "../include/httplib.h"
 #include "../include/json_translation.hpp"
+#include "../include/logger.hpp"
+#include "../include/persistence.hpp"
 
 #include <iostream>
 #include <sstream>
@@ -10,20 +12,31 @@ using json = nlohmann::json;
 
 
 int main() {
-    kg::GraphStore store; 
-    httplib::Server svr; 
+    const std::string wal_path = "storage.wal";
+    kg::GraphStore store = kg::load_graph_store_from_wal(wal_path);
+    kg::WalWriter wal(wal_path);
+    httplib::Server svr;
+
+    kg::log::info("storage service starting", {
+        {"wal_path", wal_path},
+        {"node_count", std::to_string(store.node_count())},
+        {"edge_count", std::to_string(store.edge_count())}
+    });
+
     svr.Get("/health", [](const httplib::Request&, httplib::Response& res) {
         res.set_content(R"({"status":"ok"})", "application/json");
     });
 
-    svr.Post("/nodes", [&store](const httplib::Request& req, httplib::Response& res) {
+    svr.Post("/nodes", [&store, &wal](const httplib::Request& req, httplib::Response& res) {
         try {
             json body = json::parse(req.body);
             kg::Node n = kg::node_from_json(body);
             store.add_node(n);
+            wal.record_add_node(n);
             res.status = 201;
             res.set_content(kg::node_to_json(n).dump(), "application/json");
         } catch (const std::exception& e) {
+            kg::log::warn("rejected POST /nodes", {{"error", e.what()}});
             res.status = 400;
             json err{{"error", e.what()}};
             res.set_content(err.dump(), "application/json");
@@ -42,14 +55,16 @@ int main() {
         res.set_content(kg::node_to_json(*n).dump(), "application/json");
     });
 
-    svr.Post("/edges", [&store](const httplib::Request& req, httplib::Response& res) {
+    svr.Post("/edges", [&store, &wal](const httplib::Request& req, httplib::Response& res) {
         try {
             json body = json::parse(req.body);
             kg::Edge e = kg::edge_from_json(body);
             store.add_edge(e);
+            wal.record_add_edge(e);
             res.status = 201;
             res.set_content(kg::edge_to_json(e).dump(), "application/json");
         } catch (const std::exception& e) {
+            kg::log::warn("rejected POST /edges", {{"error", e.what()}});
             res.status = 400;
             json err{{"error", e.what()}};
             res.set_content(err.dump(), "application/json");
@@ -76,7 +91,7 @@ int main() {
         res.set_content(stats.dump(), "application/json");
     });
 
-    std::cout << "CortexKernel storage service listening on port 8080..." << std::endl;
+    kg::log::info("storage service listening", {{"port", "8080"}});
     svr.listen("0.0.0.0", 8080);
 
     return 0;
