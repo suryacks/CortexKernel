@@ -48,6 +48,15 @@ std::vector<const Edge*> GraphStore::live_edges() const {
     return result;
 }
 
+std::vector<const Edge*> GraphStore::all_edges() const {
+    std::vector<const Edge*> result;
+    result.reserve(edges_.size());
+    for (const auto& pair : edges_) {
+        result.push_back(&(pair.second));
+    }
+    return result;
+}
+
 bool GraphStore::invalidate_edge(const std::string& edge_id, const std::string& invalid_at_timestamp) {
     auto it = edges_.find(edge_id);
     if (it == edges_.end()) {

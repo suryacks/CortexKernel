@@ -17,6 +17,7 @@ FetchContent_MakeAvailable(Catch2)
 add_library(cortexkernel_core
     src/graph_store.cpp
     src/json_translation.cpp
+    src/contradiction_detector.cpp
 )
 target_include_directories(cortexkernel_core PUBLIC include)
 

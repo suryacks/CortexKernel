@@ -17,6 +17,7 @@ public:
     std::vector<const Edge*> edges_from(const std::string& subject_id) const;
     std::vector<const Edge*> edges_to(const std::string& object_id) const;
     std::vector<const Edge*> live_edges() const;
+    std::vector<const Edge*> all_edges() const;
 
     bool invalidate_edge(const std::string& edge_id, const std::string& invalid_at_timestamp);
 
