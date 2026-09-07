@@ -5,7 +5,7 @@ namespace kg {
 
 std::string node_type_to_string(NodeType t) {
     switch (t) {
-        case NodeType::Self. return "Self";
+        case NodeType::Self: return "Self";
         case NodeType::Person: return "Person";
         case NodeType::Place: return "Place";
         case NodeType::Org: return "Org";
@@ -61,7 +61,7 @@ json node_to_json(const Node& n) {
         {"source_ref", n.source_ref},
         {"created_at", n.created_at},
         {"updated_at", n.updated_at}
-    }
+    };
 }
 Node node_from_json(const json& j) {
     Node n;
