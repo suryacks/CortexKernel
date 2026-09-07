@@ -1,0 +1,20 @@
+services:
+  storage:
+    build: ./services/storage
+    ports:
+      - "8080:8080"
+
+  ranking:
+    build: ./services/extraction/ranking
+    ports:
+      - "8081:8081"
+
+  gateway:
+    build: ./services/gateway
+    ports:
+      - "8090:8090"
+    environment:
+      STORAGE_URL: http://storage:8080
+      CORTEXKERNEL_API_KEYS: dev-key
+    depends_on:
+      - storage

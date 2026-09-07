@@ -1,3 +1,4 @@
+#include "../include/contradiction_detector.hpp"
 #include "../include/graph_store.hpp"
 #include "../include/httplib.h"
 #include "../include/json_translation.hpp"
@@ -89,6 +90,49 @@ int main() {
             {"edge_count", store.edge_count()}
         };
         res.set_content(stats.dump(), "application/json");
+    });
+
+    svr.Get("/contradictions", [&store](const httplib::Request&, httplib::Response& res) {
+        kg::ContradictionDetector detector(store);
+        json result = json::array();
+        for (const auto& c : detector.find_direct_contradictions()) {
+            result.push_back({
+                {"type", "direct"},
+                {"subject_id", c.subject_id},
+                {"predicate", c.predicate},
+                {"edge_a", kg::edge_to_json(*c.edge_a)},
+                {"edge_b", kg::edge_to_json(*c.edge_b)}
+            });
+        }
+        for (const auto& c : detector.find_value_behavior_mismatches()) {
+            result.push_back({
+                {"type", "value_behavior"},
+                {"subject_id", c.subject_id},
+                {"predicate", c.predicate},
+                {"edge_a", kg::edge_to_json(*c.edge_a)},
+                {"edge_b", kg::edge_to_json(*c.edge_b)}
+            });
+        }
+        res.set_content(result.dump(), "application/json");
+    });
+
+    svr.Get(R"(/drift/([^/]+)/([^/]+))", [&store](const httplib::Request& req, httplib::Response& res) {
+        std::string subject_id = req.matches[1];
+        std::string predicate = req.matches[2];
+        kg::ContradictionDetector detector(store);
+        try {
+            kg::DriftState state = detector.classify_drift(subject_id, predicate);
+            json result{
+                {"subject_id", subject_id},
+                {"predicate", predicate},
+                {"state", kg::drift_state_to_string(state)}
+            };
+            res.set_content(result.dump(), "application/json");
+        } catch (const std::invalid_argument& e) {
+            res.status = 404;
+            json err{{"error", e.what()}};
+            res.set_content(err.dump(), "application/json");
+        }
     });
 
     kg::log::info("storage service listening", {{"port", "8080"}});

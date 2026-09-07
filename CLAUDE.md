@@ -125,9 +125,21 @@ CortexKernel/
                                     (DONE, manually verified across a real
                                     process restart — see Current status).
                                     Nothing else in the system calls it yet.
-    gateway/                     — planned: lightweight API gateway in front
-      of storage + extraction, handling auth (API keys) and rate limiting.
-      (PLANNED, Tier 3)
+        Dockerfile                — containerizes the ranking service
+                                    (python:3.12-slim, stdlib only) (DONE)
+    gateway/                     — lightweight API gateway in front of storage:
+      X-API-Key auth + per-key token-bucket rate limiting, proxies allowed
+      requests through to the storage service (DONE)
+      rate_limiter.py             — TokenBucket + RateLimiter (DONE, unit
+                                    tested with injected fake clock values,
+                                    not real sleeps — test_rate_limiter.py)
+      gateway.py                  — stdlib-only HTTP proxy; `evaluate_request()`
+                                    is a pure function (auth + rate-limit
+                                    decision) kept separate from the HTTP
+                                    handler specifically so it's unit
+                                    testable without real sockets (DONE)
+      test_gateway.py             — unit tests for `evaluate_request()` (DONE)
+      Dockerfile                  — containerizes the gateway (DONE)
   k8s/                            — Kubernetes manifests for a local `kind`
                                     cluster
     storage-deployment.yaml       — Deployment for the storage service, with
@@ -146,6 +158,12 @@ CortexKernel/
     visualization dashboard (PLANNED, Tier 4)
   .github/workflows/
     ci.yml                       — builds + runs C++ tests on every push (DONE, green)
+  docker-compose.yml              — brings up storage + ranking + gateway
+                                    together on one network (DONE, verified:
+                                    `docker compose up`, curled the gateway,
+                                    watched it proxy to storage over the
+                                    compose network, `docker compose down`
+                                    cleaned up — see Current status)
   README.md                      — needs full writeup (NOT STARTED)
   .gitignore
 ```
@@ -265,6 +283,14 @@ status.
   Secret, never hardcoded or committed. A `k8s/secret.yaml.example`
   template with a placeholder gets committed; the real `k8s/secret.yaml`
   is gitignored.
+- **Auth/rate-limit decisions are pure functions, kept separate from the
+  HTTP handler that calls them** — `gateway.py`'s `evaluate_request()`
+  takes primitives in, returns a primitive tuple out, with no socket or
+  `self` involved. Same reasoning as `EpsilonGreedyRanker`'s
+  `rank()`/`export_state()`: the thing worth unit testing shouldn't
+  require spinning up a real server to test. This is also what made it
+  possible to catch the `TokenBucket` clock bug (see Current status)
+  from a plain `unittest` run instead of a flaky integration test.
 
 ## Current status (as of last session)
 
@@ -324,9 +350,39 @@ status.
   `POST /rank` call already reflected the learned preference — see
   transcript in this session. State file is gitignored
   (`bandit_state.json`).
-- `services/extraction/ranking/service.py`: still nothing else in the
-  system calls it — it's a standalone, manually-run script, not yet
-  containerized or supervised.
+- `services/extraction/ranking/service.py`: now containerized
+  (`Dockerfile`, verified via `docker compose build`/`up`), but still
+  nothing *calls* it as part of a real flow — the extraction pipeline
+  that would produce contradictions to rank doesn't exist yet.
+- `GET /contradictions` and `GET /drift/:subject_id/:predicate`: added
+  to `main.cpp` and **verified by hand end-to-end**: posted a direct
+  contradiction (same subject+predicate, different object) and a
+  value/behavior mismatch, confirmed both show up correctly typed in
+  `/contradictions`, confirmed `/drift/self/lives_in` returns
+  `CONTRADICTED` and `/drift/self/prioritizes` returns `BOTH`, and
+  confirmed an unknown subject/predicate 404s instead of 500ing.
+- **API gateway (`services/gateway/`): built and verified two ways.**
+  First, `evaluate_request()` (the auth + rate-limit decision, kept as a
+  pure function separate from the HTTP handler) has 10 passing unit
+  tests. Building those tests caught a real bug: `TokenBucket` seeded
+  `last_refill` from the real wall clock (`time.monotonic()`) while
+  tests fed it synthetic `now=0.0` timestamps, producing a huge bogus
+  elapsed-time value on the first call and making every bucket start
+  already drained — fixed by lazily setting `last_refill` from whatever
+  `now` value is first observed, real or synthetic. Second, ran the
+  gateway against a real `storage_server` process: no API key → 401,
+  wrong key → 401, correct key → request actually proxied through to
+  storage and back (`POST /nodes` then `GET /nodes/:id` via the gateway
+  both worked).
+- **`docker-compose.yml`: built and run for real.** `docker compose
+  build` built all three images (storage, ranking, gateway);
+  `docker compose up` started all three on one network; curled the
+  gateway from the host with the `X-API-Key` header and it proxied to
+  the `storage` container by its compose service name
+  (`STORAGE_URL=http://storage:8080`), not localhost — i.e. real
+  container-to-container networking, not just three processes sharing a
+  host. `docker compose down` cleaned up. This is the most concrete
+  "distributed system" demonstration in the project so far.
 - `semantic_index_bench.cpp`: `SemanticIndex::most_similar()` stays in
   the low single-digit milliseconds up to 10,000 embeddings (brute-force
   cosine, O(n) per query) — no bottleneck found yet at these sizes.
@@ -347,8 +403,8 @@ status.
   still tries to contact a server for API discovery and fails without
   one). **Not yet actually applied to a running cluster — don't claim
   they're deploy-tested until that happens.**
-- Full test suite: 74 C++ assertions across 26 test cases + 9 Python
-  unittest cases, all green.
+- Full test suite: 74 C++ assertions across 26 test cases + 19 Python
+  unittest cases (9 ranking + 10 gateway), all green.
 - README: not started.
 - `services/extraction` now has real content (`ranking/`), but the
   extraction pipeline itself (calling the Anthropic API to produce
@@ -380,9 +436,9 @@ status.
     a naive self-join at 10k edges. Still missing: memory-footprint and
     req/sec numbers (this only measured query latency) — worth adding if
     the README wants a fuller comparison table.
-11. Expose contradiction/drift results over the HTTP API
-    (`GET /contradictions`, `GET /drift/:subject_id/:predicate`) — NOT
-    STARTED.
+11. ~~Expose contradiction/drift results over the HTTP API~~ — DONE
+    (`GET /contradictions`, `GET /drift/:subject_id/:predicate`),
+    verified end-to-end with real posted data (see Current status).
 
 **Tier 3 — distributed systems, ML infra, and RL integration:**
 12. Extraction service: Python, calls the Anthropic API for entity/relation
@@ -397,24 +453,31 @@ status.
     ML-infra feature of the product. NOT STARTED (same API-key blocker).
 14. ~~Persist the bandit's learned value estimates~~ — DONE
     (`persistence.py`, wired into `service.py`, verified across a real
-    restart). Still open from this item: actually call
-    `service.py`'s `POST /rank`/`POST /feedback` from somewhere real
-    (the future extraction service or a UI) instead of curling it by
-    hand, and add a supervisor/systemd/Docker entry so it isn't a
-    manually-started script.
+    restart). ~~Add a Docker entry so it isn't a manually-started
+    script~~ — DONE (`services/extraction/ranking/Dockerfile`, part of
+    `docker-compose.yml`). **Still open**: actually call `service.py`'s
+    `POST /rank`/`POST /feedback` from somewhere real (the future
+    extraction service or a UI) instead of curling it by hand — there's
+    still no real caller.
 15. gRPC + Protocol Buffers between extraction and storage (in addition
     to the public REST API).
 16. Redis: caching layer for storage's hot read paths, plus an event
     stream (Redis Streams/NATS) for async extraction → storage ingestion.
-17. Lightweight API gateway in front of both services: API-key auth,
-    rate limiting.
+17. ~~Lightweight API gateway in front of storage: API-key auth, rate
+    limiting~~ — DONE (`services/gateway/`), verified against a real
+    `storage_server` process AND through `docker-compose.yml` with real
+    container-to-container networking. Not yet in front of the
+    extraction/ranking services too, since there's no real traffic to
+    those yet — revisit once item 12 exists.
 18. `kind` cluster set up locally + `kubectl apply` of
     `k8s/storage-deployment.yaml` and `k8s/storage-service.yaml` (written
     and YAML-validated already, see Current status) against a real
     cluster; then add extraction + gateway manifests once those services
     exist. **Partially done**: the storage manifests exist but are
     unverified against an actual cluster — installing `kind` was out of
-    scope for this session.
+    scope for this session. `docker-compose.yml` now covers local
+    multi-service orchestration in the meantime, but that's not the same
+    thing as a k8s deployment — don't conflate the two on a resume.
 19. Helm chart packaging (replacing raw k8s YAML).
 20. Terraform for cluster/resource provisioning.
 21. Prometheus metrics endpoint + Grafana dashboard + OpenTelemetry tracing
