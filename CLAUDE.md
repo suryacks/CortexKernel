@@ -6,7 +6,12 @@ CortexKernel is a **distributed, bi-temporal knowledge graph platform** for
 tracking a person's stated values against their observed behavior over
 time — built as a portfolio/resume project demonstrating systems
 programming (C++), distributed systems (gRPC, event-driven pipelines),
-ML/NLP engineering (Python, LLM-based extraction), data infrastructure
+ML/NLP engineering (Python, LLM-based extraction) and ML infrastructure
+(a self-hosted embedding + vector-similarity index feeding contradiction
+detection), reinforcement learning (a bandit that learns which
+contradictions are worth surfacing from real user feedback),
+performance/quant-style engineering (benchmarked, profiled, and optimized
+detection algorithms with published latency numbers), data infrastructure
 (caching, embedded durable storage), containerization (Docker),
 orchestration (Kubernetes + Helm), infra-as-code (Terraform), and CI/CD
 (GitHub Actions). It is not a daily-use production tool — correctness,
@@ -62,6 +67,7 @@ CortexKernel/
                                       mismatch, and drift-state detectors (DONE)
         json_translation.hpp     — DTO layer, JSON <-> C++ types (DONE)
         persistence.hpp          — WAL-based durability for GraphStore (DONE, not wired into main.cpp yet)
+        semantic_index.hpp       — embedding + cosine-similarity vector index (DONE, placeholder embeddings)
         httplib.h                — vendored single-header HTTP library
         json.hpp                 — vendored nlohmann/json single header
       src/
@@ -69,17 +75,29 @@ CortexKernel/
         contradiction_detector.cpp
         json_translation.cpp
         persistence.cpp
+        semantic_index.cpp
         main.cpp                 — HTTP server entrypoint (DONE, still in-memory only)
       tests/
         test_graph_store.cpp      — Catch2 unit tests (DONE, passing)
         test_json_translation.cpp — Catch2 unit tests (DONE, passing)
         test_contradiction_detector.cpp — Catch2 unit tests (DONE, passing)
+        test_semantic_index.cpp  — Catch2 unit tests (DONE, passing)
+      bench/
+        contradiction_bench.cpp  — latency/throughput microbenchmark for
+                                    ContradictionDetector at increasing graph
+                                    sizes (DONE, see Current status for findings)
       CMakeLists.txt              — FetchContent for Catch2 (DONE)
       Dockerfile                  — multi-stage build (NOT STARTED)
-    extraction/                  — Python LLM-based extraction pipeline (NOT STARTED)
+    extraction/                  — Python LLM-based extraction pipeline (IN PROGRESS)
       Calls the Anthropic API to turn raw journal/chat text into typed
       Node/Edge candidates, posts them to the storage service's REST API.
       Planned stack: FastAPI, Pydantic, httpx.
+      ranking/
+        bandit.py                — epsilon-greedy contextual bandit (RL) that
+                                    ranks detected contradictions by learned
+                                    category value + confidence (DONE, no
+                                    caller wired up yet, no persistence of
+                                    learned state across restarts)
     gateway/                     — planned: lightweight API gateway in front
       of storage + extraction, handling auth (API keys) and rate limiting.
       (PLANNED, Tier 3)
@@ -126,9 +144,26 @@ CortexKernel/
   lint/test once the extraction service exists.
 - **Frontend (planned)**: React + TypeScript + D3.js dashboard
   visualizing the graph and surfacing detected contradictions.
-- **Benchmarking (planned)**: load-testing suite (k6 or wrk) producing
-  real latency/throughput numbers vs. a naive SQLite baseline, published
-  in the README.
+- **Benchmarking / perf engineering**: in-repo C++ microbenchmark
+  (`bench/contradiction_bench.cpp`) measuring min/p50/p99/max latency of
+  each detector method at 100/1k/10k-edge graph sizes — already found a
+  real O(n²)-per-predicate-group bottleneck (see Current status). Planned
+  follow-up: k6/wrk load test of the HTTP API, and a benchmark vs. a naive
+  SQLite baseline, published in the README with real numbers.
+- **ML infra / vector search**: `SemanticIndex` (brute-force cosine
+  similarity over `std::vector<float>` embeddings) plus `embed_text()`, a
+  hashed-trigram bag-of-features embedding used as a placeholder until a
+  real embedding model/API is wired in. Intended use: catch contradictions
+  that don't share exact predicate/object strings but are semantically
+  the same claim. Today it's an untested-in-production, self-hosted
+  ANN-style index — not yet plugged into `ContradictionDetector`.
+- **RL — contradiction ranking**: `EpsilonGreedyRanker`
+  (`services/extraction/ranking/bandit.py`), a multi-armed bandit that
+  learns, from user feedback (acted-on vs. dismissed), which category of
+  contradiction is worth surfacing first, and re-ranks accordingly. Explore
+  vs. exploit via epsilon-greedy; per-category value estimated by
+  incremental sample averaging. Not yet wired to any real feedback source
+  or persisted between runs — currently a standalone, tested-by-hand module.
 
 Every "planned" item above stays marked as such until it's built and
 tested — don't let the roadmap's ambition drift into overstating current
@@ -153,6 +188,19 @@ status.
   only exposes raw edge access (`live_edges()`, `all_edges()`, etc.);
   detection logic is a separate, independently testable layer on top.
   Same separation-of-concerns reasoning as the DTO layer.
+- **Semantic search is a separate, swappable module**
+  (`semantic_index.hpp/cpp`): `SemanticIndex` only knows about
+  `Embedding` (`std::vector<float>`) and IDs, never about `Node`/`Edge`
+  directly — so the placeholder hashed-trigram `embed_text()` can be
+  replaced by a real embedding-model call later without touching the
+  index or search logic. Same reasoning as the DTO layer: keep the thing
+  that will change (how you get an embedding) decoupled from the thing
+  that won't (how you search a set of them).
+- **Contradiction ranking is a pure function of feedback, not of the
+  graph** — `EpsilonGreedyRanker` takes a flat list of `Contradiction`
+  records (id, category, confidence) and returns a re-ordered list; it
+  has no dependency on `GraphStore` or C++ types at all. Keeps the RL
+  component testable and swappable independent of the storage engine.
 - **Persistence is a write-ahead log, decoupled from `GraphStore`**
   (`persistence.hpp/cpp`): `WalWriter` appends one JSON-line op
   (`add_node`/`add_edge`/`invalidate_edge`) per mutation, and
@@ -192,10 +240,32 @@ status.
   `main()`, call `record_*` after every mutating endpoint, call
   `load_graph_store_from_wal()` at startup instead of a fresh
   `GraphStore`) is the next concrete step, not yet done.
-- Full test suite: 48 assertions across 19 test cases, all green.
+- `SemanticIndex` / `embed_text()` / `cosine_similarity()`: implemented and
+  unit tested (`test_semantic_index.cpp`). `embed_text()` is explicitly a
+  placeholder (hashed-trigram bag, no real model) — do not describe this
+  as "using embeddings from a model" until it's swapped for a real one.
+  Not yet called from anywhere in the request path.
+- `contradiction_bench.cpp`: microbenchmark added and run locally. **Real
+  finding, not hypothetical**: `find_direct_contradictions()` and
+  `find_value_behavior_mismatches()` are O(n²) *within* each
+  (subject, predicate) group, and at 10,000 edges spread over 20
+  predicates (~500 edges/group) that's ~380ms mean latency — up from
+  ~4.7ms at 1,000 edges. `classify_drift()` stays sub-millisecond at all
+  three sizes tested (100/1k/10k) since it only touches one group.
+  **This is a genuine, not-yet-fixed perf bottleneck** — the honest
+  before-benchmark-numbers, and the fix (bucket live edges by object_id
+  within a group instead of enumerating all pairs) is Tier 2 item 8
+  below. Don't claim this is fast until it's actually fixed and
+  re-benchmarked.
+- `EpsilonGreedyRanker` (`bandit.py`): implemented, smoke-tested by hand
+  (not yet a pytest suite), not wired to any real feedback source, and
+  learned value estimates are in-memory only (lost on process restart —
+  no persistence for the bandit's learned state yet).
+- Full test suite: 74 assertions across 26 C++ test cases, all green.
 - Dockerfile for storage service: not started.
 - README: not started.
-- Nothing outside `services/storage` started yet.
+- Nothing outside `services/storage` and the one new `ranking/bandit.py`
+  file started yet.
 
 ## Roadmap (prioritized, in order)
 
@@ -209,33 +279,61 @@ status.
    startup) — NOT STARTED
 7. Structured logging (spdlog) replacing `std::cout` in main.cpp — NOT STARTED
 
-**Tier 2 — prove it with numbers:**
-8. Benchmark/comparison writeup vs. a naive SQLite baseline — real
-   numbers (query latency, memory footprint, req/sec) for the README.
-9. Expose contradiction/drift results over the HTTP API
-   (`GET /contradictions`, `GET /drift/:subject_id/:predicate`).
+**Tier 2 — prove it with numbers (quant-dev / perf-engineering angle):**
+8. Fix the O(n²)-per-group bottleneck found by `contradiction_bench.cpp`:
+   bucket live edges within a (subject, predicate) group by `object_id`
+   first (single pass) so distinct-object contradictions are found in
+   roughly O(n) instead of enumerating all pairs; re-run the benchmark
+   and record the before/after numbers directly in this file and the
+   README. This is the single most resume-relevant "found it, measured
+   it, fixed it, proved it" story in the project — don't skip it for a
+   flashier item.
+9. Extend `contradiction_bench.cpp` (or add a sibling benchmark) to cover
+   `SemanticIndex::most_similar()` at increasing index sizes, since
+   brute-force cosine similarity is also O(n) per query and will need a
+   real ANN structure (e.g. HNSW) once the index is large enough to matter.
+10. Benchmark/comparison writeup vs. a naive SQLite baseline — real
+    numbers (query latency, memory footprint, req/sec) for the README.
+11. Expose contradiction/drift results over the HTTP API
+    (`GET /contradictions`, `GET /drift/:subject_id/:predicate`).
 
-**Tier 3 — distributed systems + infra polish:**
-10. Extraction service: Python, calls the Anthropic API for entity/relation
+**Tier 3 — distributed systems, ML infra, and RL integration:**
+12. Extraction service: Python, calls the Anthropic API for entity/relation
     extraction, exposes its own HTTP API, containerized with the same
     multi-stage Docker pattern as storage.
-11. gRPC + Protocol Buffers between extraction and storage (in addition
+13. Swap `embed_text()`'s hashed-trigram placeholder for real embeddings
+    (an actual embedding model or API call) and wire `SemanticIndex` into
+    `ContradictionDetector` so semantically-equivalent claims (not just
+    exact predicate/object string matches) get flagged — this is what
+    turns the vector index from a standalone module into an actual
+    ML-infra feature of the product.
+14. Wire `EpsilonGreedyRanker` into the storage API: an endpoint that
+    returns contradictions pre-ranked by the bandit, plus a
+    `POST /feedback` endpoint that calls `record_feedback()` so the
+    ranker actually learns from real usage instead of hand-fed rewards;
+    persist the bandit's learned value estimates (reuse the WAL pattern
+    or a small JSON snapshot) so learning survives a restart.
+15. gRPC + Protocol Buffers between extraction and storage (in addition
     to the public REST API).
-12. Redis: caching layer for storage's hot read paths, plus an event
+16. Redis: caching layer for storage's hot read paths, plus an event
     stream (Redis Streams/NATS) for async extraction → storage ingestion.
-13. Lightweight API gateway in front of both services: API-key auth,
+17. Lightweight API gateway in front of both services: API-key auth,
     rate limiting.
-14. `kind` cluster + Kubernetes manifests deploying storage + extraction
+18. `kind` cluster + Kubernetes manifests deploying storage + extraction
     + gateway as separate pods talking over k8s Services.
-15. Helm chart packaging (replacing raw k8s YAML).
-16. Terraform for cluster/resource provisioning.
-17. Prometheus metrics endpoint + Grafana dashboard + OpenTelemetry tracing.
+19. Helm chart packaging (replacing raw k8s YAML).
+20. Terraform for cluster/resource provisioning.
+21. Prometheus metrics endpoint + Grafana dashboard + OpenTelemetry tracing
+    (should include the bandit's per-category value estimates and the
+    detector's benchmarked latencies as tracked metrics, not just
+    infra-level metrics).
 
 **Tier 4 — presentation, do last:**
-18. React + TypeScript + D3.js web UI visualizing the graph and
-    surfacing detected contradictions.
-19. Full README rewrite: architecture diagram (Mermaid), badges, "why I
-    built this," benchmark numbers front and center.
+22. React + TypeScript + D3.js web UI visualizing the graph and
+    surfacing detected contradictions, ranked by the bandit.
+23. Full README rewrite: architecture diagram (Mermaid), badges, "why I
+    built this," benchmark numbers (detector latency before/after the
+    Tier 2 fix, semantic search vs. exact match) front and center.
 
 ## Working conventions for Claude Code sessions on this repo
 
