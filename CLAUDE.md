@@ -69,6 +69,15 @@ CortexKernel/
         persistence.hpp          — WAL-based durability for GraphStore (DONE, wired into main.cpp)
         semantic_index.hpp       — embedding + cosine-similarity vector index (DONE, placeholder embeddings)
         logger.hpp               — dependency-free structured logger (DONE, see note below on spdlog)
+        metrics.hpp              — Prometheus-exposition-format request counters
+                                    (DONE, see Current status for a known
+                                    cardinality caveat)
+        redis_client.hpp         — minimal RESP-protocol client over a raw POSIX
+                                    socket (GET/SET/DEL/PING only, no hiredis
+                                    dependency) (DONE)
+        node_cache.hpp           — domain-specific cache-aside wrapper: Node <->
+                                    JSON <-> RedisClient, kept separate from the
+                                    raw protocol client (DONE)
         httplib.h                — vendored single-header HTTP library
         json.hpp                 — vendored nlohmann/json single header
       src/
@@ -78,15 +87,29 @@ CortexKernel/
         persistence.cpp
         semantic_index.cpp
         logger.cpp
+        metrics.cpp
+        redis_client.cpp
+        node_cache.cpp
         main.cpp                 — HTTP server entrypoint (DONE): loads GraphStore
                                     from the WAL at startup, records every
-                                    POST /nodes and POST /edges to the WAL, and
-                                    logs structured startup/error events
+                                    POST /nodes and POST /edges to the WAL, logs
+                                    structured startup/error events, caches nodes
+                                    in Redis (cache-aside on GET, write-through on
+                                    POST), and exposes GET /metrics
       tests/
         test_graph_store.cpp      — Catch2 unit tests (DONE, passing)
         test_json_translation.cpp — Catch2 unit tests (DONE, passing)
         test_contradiction_detector.cpp — Catch2 unit tests (DONE, passing)
         test_semantic_index.cpp  — Catch2 unit tests (DONE, passing)
+        test_metrics.cpp         — Catch2 unit tests (DONE, passing)
+        test_redis_client.cpp    — Catch2 unit tests: one pure failure-mode test
+                                    that always runs (connect to an unreachable
+                                    port, confirm graceful `false`/`nullopt`, no
+                                    crash) plus real integration tests that SKIP
+                                    (not fail) when no local redis-server is
+                                    reachable, and actually assert against a
+                                    real one when it is (DONE — see Current
+                                    status for both cases actually being run)
       bench/
         contradiction_bench.cpp  — latency/throughput microbenchmark for
                                     ContradictionDetector at increasing graph
@@ -153,16 +176,25 @@ CortexKernel/
   infra/
     helm/                         — Helm chart replacing raw manifests (PLANNED)
     terraform/                   — IaC for the `kind`/cloud cluster + any
-      managed resources (Redis, object storage) (PLANNED)
+      managed resources (object storage) (PLANNED — Redis itself is now
+      just a docker-compose service, see below, not something Terraform
+      needs to provision for local dev)
   web/                            — React + TypeScript + D3.js graph
     visualization dashboard (PLANNED, Tier 4)
   .github/workflows/
-    ci.yml                       — builds + runs C++ tests on every push (DONE, green)
-  docker-compose.yml              — brings up storage + ranking + gateway
-                                    together on one network (DONE, verified:
-                                    `docker compose up`, curled the gateway,
-                                    watched it proxy to storage over the
-                                    compose network, `docker compose down`
+    ci.yml                       — builds + runs C++ tests on every push,
+                                    now with a `redis` service container so
+                                    the RedisClient integration tests
+                                    actually assert instead of skipping in
+                                    CI (DONE, green)
+  docker-compose.yml              — brings up redis + storage + ranking +
+                                    gateway together on one network (DONE,
+                                    verified: `docker compose up`, curled
+                                    the gateway, watched it proxy to storage
+                                    over the compose network with caching
+                                    actually hitting the `redis` container
+                                    (`redis_reachable="true"` in storage's
+                                    startup log), `docker compose down`
                                     cleaned up — see Current status)
   README.md                      — needs full writeup (NOT STARTED)
   .gitignore
@@ -291,6 +323,32 @@ status.
   require spinning up a real server to test. This is also what made it
   possible to catch the `TokenBucket` clock bug (see Current status)
   from a plain `unittest` run instead of a flaky integration test.
+- **Redis is a cache-aside optimization, never a dependency the service
+  needs to function** — `RedisClient` fails soft everywhere (returns
+  `false`/`nullopt` instead of throwing) if it can't connect, and
+  `main.cpp` still serves correct data straight from `GraphStore` when
+  Redis is down (verified by hand — see Current status). Never make a
+  future change that causes storage to hard-fail when Redis is
+  unavailable; that would invert the whole point of it being a cache.
+- **No hiredis dependency for `RedisClient`** — same reasoning as
+  skipping spdlog: it's a small, well-specified text protocol (RESP), and
+  a raw-socket implementation keeps the project's dependency surface
+  small and every line of the client auditable/testable without pulling
+  in a new library. Revisit only if the client needs to grow real
+  connection pooling or pipelining.
+- **`NodeCache` is a separate layer from `RedisClient`**, same reasoning
+  as `SemanticIndex`/`embed_text()`: the raw protocol client knows
+  nothing about `Node` or JSON; the domain-specific cache-key scheme
+  (`cortexkernel:node:<id>`) and Node<->JSON translation live in
+  `node_cache.hpp/cpp` instead.
+- **Metrics record raw request paths today (e.g. `/nodes/n1`), not
+  templated ones (e.g. `/nodes/:id`)** — this is a known, accepted
+  cardinality footgun for a real Prometheus deployment with many
+  distinct node IDs (each ID gets its own timeseries forever). Flagged
+  here on purpose rather than silently shipped; fixing it means teaching
+  the metrics/logging hook the matched route template, not just the
+  resolved path — worth doing before this ever points at a Prometheus
+  server with retention that matters.
 
 ## Current status (as of last session)
 
@@ -403,7 +461,37 @@ status.
   still tries to contact a server for API discovery and fails without
   one). **Not yet actually applied to a running cluster — don't claim
   they're deploy-tested until that happens.**
-- Full test suite: 74 C++ assertions across 26 test cases + 19 Python
+- **`GET /metrics` (Prometheus exposition format) and Redis caching:
+  built and verified against a real, locally-installed Redis
+  (`brew install redis`), not mocked.** `RedisClient` is a from-scratch
+  RESP-protocol client over a raw POSIX socket (no hiredis) —
+  `redis_client.cpp`. `NodeCache` wraps it with Node<->JSON translation
+  and a `cortexkernel:node:<id>` key scheme. Wired into `main.cpp`:
+  `POST /nodes` writes through to the cache, `GET /nodes/:id` is
+  cache-aside and sets an `X-Cache: HIT`/`MISS` header. Verified by hand:
+  POST then GET showed `X-Cache: HIT`; manually `DEL`-ing the key via
+  `redis-cli` then GETing showed `MISS` then `HIT` on the next call.
+  **Also verified graceful degradation**: killed the local redis-server
+  entirely, restarted `storage_server`, confirmed POST/GET both still
+  work correctly (falls back to `GraphStore`, `X-Cache: MISS` always) —
+  the log line even reports `redis_reachable="false"` at startup for
+  observability. Then verified the same thing the other way: brought up
+  the full `docker-compose.yml` stack (now including a `redis` service)
+  and confirmed `redis_reachable="true"` and caching actually worked
+  over real container networking, not localhost.
+- `test_redis_client.cpp` has one pure test that always runs (unreachable
+  port → graceful `false`/`nullopt`, never a crash) plus three
+  integration tests that `SKIP` (Catch2's `SKIP()`, not a failure) when
+  no local redis-server is reachable. **Verified both branches**: ran the
+  suite with no redis-server running (3 skipped, rest passed), then
+  started one and reran (90/90 assertions actually executed, nothing
+  skipped). `ci.yml` now runs a `redis` GitHub Actions service container
+  specifically so these assert for real in CI instead of quietly skipping
+  forever.
+- `test_metrics.cpp`: 3 passing tests covering counting, per-route/status
+  separation, and the empty-state case.
+- Full test suite: 90 C++ assertions across 33 test cases (up from 74/26
+  — added `test_metrics.cpp` and `test_redis_client.cpp`) + 19 Python
   unittest cases (9 ranking + 10 gateway), all green.
 - README: not started.
 - `services/extraction` now has real content (`ranking/`), but the
@@ -461,8 +549,13 @@ status.
     still no real caller.
 15. gRPC + Protocol Buffers between extraction and storage (in addition
     to the public REST API).
-16. Redis: caching layer for storage's hot read paths, plus an event
-    stream (Redis Streams/NATS) for async extraction → storage ingestion.
+16. ~~Redis: caching layer for storage's hot read paths~~ — DONE
+    (`RedisClient` + `NodeCache`, wired into `POST/GET /nodes`), verified
+    against a real local Redis and again over real docker-compose
+    networking, including graceful degradation with Redis down. **Still
+    open from this item**: an event stream (Redis Streams/NATS) for async
+    extraction → storage ingestion — not attempted, there's no extraction
+    service producing events to stream yet (blocked on item 12).
 17. ~~Lightweight API gateway in front of storage: API-key auth, rate
     limiting~~ — DONE (`services/gateway/`), verified against a real
     `storage_server` process AND through `docker-compose.yml` with real
@@ -480,10 +573,15 @@ status.
     thing as a k8s deployment — don't conflate the two on a resume.
 19. Helm chart packaging (replacing raw k8s YAML).
 20. Terraform for cluster/resource provisioning.
-21. Prometheus metrics endpoint + Grafana dashboard + OpenTelemetry tracing
-    (should include the bandit's per-category value estimates and the
-    detector's benchmarked latencies as tracked metrics, not just
-    infra-level metrics).
+21. ~~Prometheus metrics endpoint~~ — **partially DONE**: `GET /metrics`
+    exists and is unit tested, recording per-route/status request counts
+    and duration sums in real Prometheus exposition format. Known,
+    accepted limitation recorded above: records raw paths, not templated
+    ones (cardinality risk at real scale). **Still open**: nothing
+    scrapes it yet (no actual Prometheus server pointed at it), no Grafana
+    dashboard, no OpenTelemetry tracing, and it doesn't yet include the
+    bandit's per-category value estimates or the detector's benchmarked
+    latencies as tracked metrics — only raw HTTP request metrics so far.
 
 **Tier 4 — presentation, do last:**
 22. React + TypeScript + D3.js web UI visualizing the graph and

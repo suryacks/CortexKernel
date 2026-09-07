@@ -21,6 +21,9 @@ add_library(cortexkernel_core
     src/persistence.cpp
     src/semantic_index.cpp
     src/logger.cpp
+    src/metrics.cpp
+    src/redis_client.cpp
+    src/node_cache.cpp
 )
 target_include_directories(cortexkernel_core PUBLIC include)
 
@@ -43,6 +46,8 @@ add_executable(unit_tests
     tests/test_json_translation.cpp
     tests/test_contradiction_detector.cpp
     tests/test_semantic_index.cpp
+    tests/test_metrics.cpp
+    tests/test_redis_client.cpp
 )
 target_link_libraries(unit_tests PRIVATE cortexkernel_core Catch2::Catch2WithMain)
 include(CTest)

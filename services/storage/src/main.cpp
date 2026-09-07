@@ -3,37 +3,74 @@
 #include "../include/httplib.h"
 #include "../include/json_translation.hpp"
 #include "../include/logger.hpp"
+#include "../include/metrics.hpp"
+#include "../include/node_cache.hpp"
 #include "../include/persistence.hpp"
+#include "../include/redis_client.hpp"
 
+#include <chrono>
+#include <cstdlib>
 #include <iostream>
 #include <sstream>
 #include <unordered_map>
 
 using json = nlohmann::json;
 
+namespace {
+
+thread_local std::chrono::steady_clock::time_point g_request_start;
+
+std::string env_or(const char* name, const std::string& fallback) {
+    const char* value = std::getenv(name);
+    return value != nullptr ? std::string(value) : fallback;
+}
+
+}
 
 int main() {
     const std::string wal_path = "storage.wal";
     kg::GraphStore store = kg::load_graph_store_from_wal(wal_path);
     kg::WalWriter wal(wal_path);
+    kg::Metrics metrics;
+
+    std::string redis_host = env_or("REDIS_HOST", "127.0.0.1");
+    int redis_port = std::stoi(env_or("REDIS_PORT", "6379"));
+    kg::RedisClient redis_client(redis_host, redis_port);
+    kg::NodeCache node_cache(redis_client, 60);
+
     httplib::Server svr;
 
     kg::log::info("storage service starting", {
         {"wal_path", wal_path},
         {"node_count", std::to_string(store.node_count())},
-        {"edge_count", std::to_string(store.edge_count())}
+        {"edge_count", std::to_string(store.edge_count())},
+        {"redis_host", redis_host},
+        {"redis_port", std::to_string(redis_port)},
+        {"redis_reachable", redis_client.ping() ? "true" : "false"}
+    });
+
+    svr.set_pre_routing_handler([](const httplib::Request&, httplib::Response&) {
+        g_request_start = std::chrono::steady_clock::now();
+        return httplib::Server::HandlerResponse::Unhandled;
+    });
+
+    svr.set_logger([&metrics](const httplib::Request& req, const httplib::Response& res) {
+        double duration_ms = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - g_request_start).count();
+        metrics.record_request(req.method, req.path, res.status, duration_ms);
     });
 
     svr.Get("/health", [](const httplib::Request&, httplib::Response& res) {
         res.set_content(R"({"status":"ok"})", "application/json");
     });
 
-    svr.Post("/nodes", [&store, &wal](const httplib::Request& req, httplib::Response& res) {
+    svr.Post("/nodes", [&store, &wal, &node_cache](const httplib::Request& req, httplib::Response& res) {
         try {
             json body = json::parse(req.body);
             kg::Node n = kg::node_from_json(body);
             store.add_node(n);
             wal.record_add_node(n);
+            node_cache.put(n);
             res.status = 201;
             res.set_content(kg::node_to_json(n).dump(), "application/json");
         } catch (const std::exception& e) {
@@ -44,8 +81,16 @@ int main() {
         }
     });
 
-    svr.Get(R"(/nodes/([^/]+))", [&store](const httplib::Request& req, httplib::Response& res) {
+    svr.Get(R"(/nodes/([^/]+))", [&store, &node_cache](const httplib::Request& req, httplib::Response& res) {
         std::string id = req.matches[1];
+
+        auto cached = node_cache.get(id);
+        if (cached.has_value()) {
+            res.set_header("X-Cache", "HIT");
+            res.set_content(kg::node_to_json(*cached).dump(), "application/json");
+            return;
+        }
+
         const kg::Node* n = store.get_node(id);
         if (n == nullptr) {
             res.status = 404;
@@ -53,6 +98,8 @@ int main() {
             res.set_content(err.dump(), "application/json");
             return;
         }
+        node_cache.put(*n);
+        res.set_header("X-Cache", "MISS");
         res.set_content(kg::node_to_json(*n).dump(), "application/json");
     });
 
@@ -133,6 +180,10 @@ int main() {
             json err{{"error", e.what()}};
             res.set_content(err.dump(), "application/json");
         }
+    });
+
+    svr.Get("/metrics", [&metrics](const httplib::Request&, httplib::Response& res) {
+        res.set_content(metrics.to_prometheus_text(), "text/plain; version=0.0.4");
     });
 
     kg::log::info("storage service listening", {{"port", "8080"}});
