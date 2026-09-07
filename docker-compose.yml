@@ -19,6 +19,16 @@ services:
     ports:
       - "8081:8081"
 
+  extraction:
+    build: ./services/extraction
+    ports:
+      - "8082:8082"
+    environment:
+      STORAGE_URL: http://storage:8080
+      EXTRACTION_BACKEND: mock
+    depends_on:
+      - storage
+
   gateway:
     build: ./services/gateway
     ports:
@@ -28,3 +38,25 @@ services:
       CORTEXKERNEL_API_KEYS: dev-key
     depends_on:
       - storage
+
+  prometheus:
+    image: prom/prometheus:latest
+    volumes:
+      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml
+    ports:
+      - "9090:9090"
+    depends_on:
+      - storage
+
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3000:3000"
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning
+      - ./observability/grafana/dashboards:/etc/grafana/provisioning/dashboards/json
+    depends_on:
+      - prometheus

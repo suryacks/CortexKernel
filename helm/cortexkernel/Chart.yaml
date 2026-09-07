@@ -1,0 +1,6 @@
+apiVersion: v2
+name: cortexkernel
+description: Helm chart for the CortexKernel storage service
+type: application
+version: 0.1.0
+appVersion: "1.0.0"

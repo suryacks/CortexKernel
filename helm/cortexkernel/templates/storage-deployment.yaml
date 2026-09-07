@@ -1,0 +1,39 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-storage
+  labels:
+    app: {{ .Release.Name }}-storage
+spec:
+  replicas: {{ .Values.storage.replicaCount }}
+  selector:
+    matchLabels:
+      app: {{ .Release.Name }}-storage
+  template:
+    metadata:
+      labels:
+        app: {{ .Release.Name }}-storage
+    spec:
+      containers:
+        - name: storage
+          image: "{{ .Values.storage.image.repository }}:{{ .Values.storage.image.tag }}"
+          imagePullPolicy: {{ .Values.storage.image.pullPolicy }}
+          ports:
+            - containerPort: {{ .Values.storage.port }}
+          env:
+            - name: REDIS_HOST
+              value: {{ .Values.storage.redis.host | quote }}
+            - name: REDIS_PORT
+              value: {{ .Values.storage.redis.port | quote }}
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: {{ .Values.storage.port }}
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: {{ .Values.storage.port }}
+            initialDelaySeconds: 5
+            periodSeconds: 10

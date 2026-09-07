@@ -1,0 +1,14 @@
+storage:
+  image:
+    repository: cortexkernel-storage
+    tag: latest
+    pullPolicy: IfNotPresent
+  replicaCount: 1
+  port: 8080
+  redis:
+    host: redis
+    port: "6379"
+
+service:
+  type: ClusterIP
+  port: 8080

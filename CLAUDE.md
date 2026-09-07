@@ -126,10 +126,38 @@ CortexKernel/
       Dockerfile / .dockerignore  — multi-stage build (DONE, built and run
                                     locally with docker build/run — see
                                     Current status)
-    extraction/                  — Python LLM-based extraction pipeline (IN PROGRESS)
-      Calls the Anthropic API to turn raw journal/chat text into typed
-      Node/Edge candidates, posts them to the storage service's REST API.
-      Planned stack: FastAPI, Pydantic, httpx.
+    extraction/                  — Python LLM-based extraction pipeline (DONE
+                                    except the actual Anthropic call — see
+                                    Current status)
+      schemas.py                   — Pydantic models mirroring the C++ side's
+                                    NodeType/EdgeClass exactly; NodeCandidate/
+                                    EdgeCandidate use `from`/`to` aliases to
+                                    match storage's JSON shape (DONE)
+      extraction_client.py         — `ExtractionClient` ABC +
+                                    `AnthropicExtractionClient` (raw `httpx`
+                                    call to the Messages API, no `anthropic`
+                                    SDK dependency). **Written but NOT run —
+                                    no API key available this session, see
+                                    Current status.**
+      mock_extraction_client.py    — `MockExtractionClient`: real, working,
+                                    regex-based heuristic extractor (e.g. "I
+                                    value X" -> StatedValue edge, "I worked on
+                                    X" -> BehaviorEvidence edge). This is the
+                                    default backend — the service actually
+                                    works out of the box with zero API key
+                                    (DONE, unit tested)
+      test_mock_extraction_client.py — unittest suite, 6 tests (DONE, passing)
+      app.py                       — FastAPI app: `POST /extract` (just
+                                    returns candidates) and
+                                    `POST /extract-and-store` (extracts, then
+                                    POSTs each node/edge to the storage
+                                    service's real REST API) (DONE, verified
+                                    end-to-end — see Current status)
+      test_app.py                  — FastAPI `TestClient` unittest suite,
+                                    exercises the mock backend, no network
+                                    calls (DONE, passing)
+      requirements.txt, Dockerfile — fastapi/uvicorn/httpx/pydantic, built
+                                    and run as a real container (DONE)
       ranking/
         bandit.py                — epsilon-greedy contextual bandit (RL) that
                                     ranks detected contradictions by learned
@@ -173,12 +201,37 @@ CortexKernel/
                                     this session, see Current status)
     storage-service.yaml          — ClusterIP Service exposing it (DONE, same
                                     caveat as above)
+  helm/cortexkernel/              — Helm chart for the storage service (DONE)
+    Chart.yaml, values.yaml       — chart metadata + configurable image/
+                                    replica/Redis-host values
+    templates/storage-deployment.yaml,
+    templates/storage-service.yaml — templatized versions of the raw
+                                    k8s/ manifests above, parameterized by
+                                    `.Release.Name` and `.Values.*` (DONE,
+                                    `helm lint` clean, `helm template`
+                                    verified to render correctly — see
+                                    Current status. Still NOT applied to a
+                                    real cluster, same as the raw manifests)
+  observability/                  — Prometheus + Grafana config (DONE, see
+                                    Current status for a full working
+                                    verification via docker-compose)
+    prometheus.yml                 — scrape config pointed at storage:8080/metrics
+    grafana/provisioning/datasources/prometheus.yml — auto-registers the
+                                    Prometheus datasource on Grafana startup
+    grafana/provisioning/dashboards/dashboards.yml  — tells Grafana where
+                                    to load dashboard JSON from
+    grafana/dashboards/cortexkernel.json — a real dashboard (2 panels:
+                                    requests/sec by route, avg latency by
+                                    route) built directly against the
+                                    actual `cortexkernel_http_requests_total`
+                                    / `..._duration_ms_sum` metric names
   infra/
-    helm/                         — Helm chart replacing raw manifests (PLANNED)
     terraform/                   — IaC for the `kind`/cloud cluster + any
-      managed resources (object storage) (PLANNED — Redis itself is now
-      just a docker-compose service, see below, not something Terraform
-      needs to provision for local dev)
+      managed resources (object storage) (PLANNED — blocked this session:
+      Homebrew's terraform formula was pulled from homebrew-core, and the
+      HashiCorp tap's bottle needs newer Xcode Command Line Tools than are
+      installed here; installing those requires a system software update
+      this session isn't going to push through on its own initiative)
   web/                            — React + TypeScript + D3.js graph
     visualization dashboard (PLANNED, Tier 4)
   .github/workflows/
@@ -187,15 +240,20 @@ CortexKernel/
                                     the RedisClient integration tests
                                     actually assert instead of skipping in
                                     CI (DONE, green)
-  docker-compose.yml              — brings up redis + storage + ranking +
-                                    gateway together on one network (DONE,
-                                    verified: `docker compose up`, curled
-                                    the gateway, watched it proxy to storage
-                                    over the compose network with caching
-                                    actually hitting the `redis` container
-                                    (`redis_reachable="true"` in storage's
-                                    startup log), `docker compose down`
-                                    cleaned up — see Current status)
+  docker-compose.yml              — brings up all 7 services (redis,
+                                    storage, ranking, extraction, gateway,
+                                    prometheus, grafana) together on one
+                                    network (DONE, fully verified — see
+                                    Current status: gateway proxying with
+                                    real cache hits, Prometheus actually
+                                    scraping storage's live /metrics and
+                                    reporting the target `up`, Grafana
+                                    auto-provisioning both the datasource
+                                    and the dashboard with zero manual
+                                    clicking, and the extraction service
+                                    actually turning journal text into
+                                    real nodes/edges inside storage over
+                                    the compose network)
   README.md                      — needs full writeup (NOT STARTED)
   .gitignore
 ```
@@ -493,10 +551,75 @@ status.
 - Full test suite: 90 C++ assertions across 33 test cases (up from 74/26
   — added `test_metrics.cpp` and `test_redis_client.cpp`) + 19 Python
   unittest cases (9 ranking + 10 gateway), all green.
+- **Helm chart (`helm/cortexkernel/`): written and verified with the real
+  `helm` binary** (`brew install helm`), not just hand-checked YAML —
+  `helm lint` passed clean, and `helm template my-release helm/cortexkernel`
+  rendered the Deployment and Service with `.Release.Name` and
+  `.Values.*` substituted correctly (image, replica count, Redis
+  host/port env vars). **Still not applied to a real cluster** — same
+  `kind`-not-installed limitation as the raw `k8s/` manifests, this only
+  proves the chart is well-formed and renders correctly.
+- **Prometheus + Grafana (`observability/`): built and fully verified
+  end-to-end via `docker-compose.yml`, not just configured on paper.**
+  Brought up the whole stack (`redis`, `storage`, `ranking`, `gateway`,
+  `prometheus`, `grafana`), generated real traffic through the gateway,
+  then confirmed: `curl localhost:9090/api/v1/targets` showed the
+  `cortexkernel-storage` scrape target as `up`; `curl
+  localhost:9090/api/v1/query?query=cortexkernel_http_requests_total`
+  returned real scraped data, not zero results; `curl
+  localhost:3000/api/datasources` showed the Prometheus datasource
+  auto-provisioned; `curl
+  localhost:3000/api/dashboards/uid/cortexkernel-storage` showed the
+  dashboard auto-loaded with both panels, titled correctly — all without
+  a single manual click in the Grafana UI. This is the most complete,
+  actually-working piece of "observability" in the project so far, not
+  aspirational config.
+- Attempted Terraform for local docker orchestration (parity with
+  `docker-compose.yml` but as IaC) and it's currently blocked: Homebrew
+  removed `terraform` from homebrew-core over licensing, and the
+  HashiCorp tap's bottle needs a newer Xcode Command Line Tools version
+  than is installed on this machine — fixing that means a system
+  software update, which this session isn't going to push through
+  unprompted. Flagging so a future session doesn't waste time
+  rediscovering this; ask Surya to update CLT first, or just skip
+  Terraform and keep `docker-compose.yml` as the local-orchestration
+  story (they overlap in purpose for local dev).
+- **Extraction service: built and verified end-to-end, with one honest
+  gap.** `MockExtractionClient` (regex-based, zero dependencies beyond
+  the stdlib `re`) is the default backend and is genuinely working code —
+  6 passing unit tests, plus a real pipeline test: posted
+  `"I value my health. I worked on the project all night."` to
+  `POST /extract-and-store`, and it correctly produced a `StatedValue`
+  edge (`self --values--> my-health`) and a `BehaviorEvidence` edge
+  (`self --did--> the-project-all-night`), which actually landed in a
+  real running `storage_server` (`/stats` went from empty to
+  `node_count=3, edge_count=2`). Repeated the same test over the full
+  `docker-compose` network with the `extraction` service added — same
+  result, real container-to-container traffic. **The honest gap**:
+  `AnthropicExtractionClient` (the real LLM-based path) is written —
+  a real `httpx` call to the Messages API with a structured-JSON-output
+  prompt matching the exact `NodeCandidate`/`EdgeCandidate` schema — but
+  has never actually been run, because there's no `ANTHROPIC_API_KEY`
+  available in this session. Don't claim the LLM extraction path works
+  until someone runs it with a real key and confirms the response
+  actually parses as valid JSON matching the schema (LLM output not
+  perfectly following a format is the realistic failure mode to expect).
+- `helm` and `kind` were installed via Homebrew this session
+  (`brew install helm kind`) — both are now available for future
+  sessions on this machine. `kind` itself was not used yet (creating and
+  deploying to an actual cluster is a bigger chunk of work than this
+  round covered) but is ready to go.
+- Attempted Terraform for local docker orchestration (parity with
+  `docker-compose.yml` but as IaC) and it's currently blocked: Homebrew
+  removed `terraform` from homebrew-core over licensing, and the
+  HashiCorp tap's bottle needs a newer Xcode Command Line Tools version
+  than is installed on this machine — fixing that means a system
+  software update, which this session isn't going to push through
+  unprompted. Flagging so a future session doesn't waste time
+  rediscovering this; ask Surya to update CLT first, or just skip
+  Terraform and keep `docker-compose.yml` as the local-orchestration
+  story (they overlap in purpose for local dev).
 - README: not started.
-- `services/extraction` now has real content (`ranking/`), but the
-  extraction pipeline itself (calling the Anthropic API to produce
-  Node/Edge candidates) is still not started.
 
 ## Roadmap (prioritized, in order)
 
@@ -529,24 +652,34 @@ status.
     verified end-to-end with real posted data (see Current status).
 
 **Tier 3 — distributed systems, ML infra, and RL integration:**
-12. Extraction service: Python, calls the Anthropic API for entity/relation
-    extraction, exposes its own HTTP API, containerized with the same
-    multi-stage Docker pattern as storage. NOT STARTED (needs an API key
-    this session doesn't have — do this with Surya present to supply one).
+12. ~~Extraction service: exposes its own HTTP API, containerized~~ — DONE
+    (`services/extraction/`), verified end-to-end with a real running
+    storage service and again over `docker-compose`. **What's actually
+    NOT done**: the real Anthropic-backed extraction path
+    (`AnthropicExtractionClient`) is written but has never been run — no
+    API key available this session. The service defaults to
+    `MockExtractionClient` (a real, working, regex-based heuristic
+    extractor), which is what was verified. Do the Anthropic path with
+    Surya present to supply a key, and expect the prompt/parsing to need
+    at least one iteration — LLM output not perfectly matching the
+    expected JSON schema is the realistic failure mode.
 13. Swap `embed_text()`'s hashed-trigram placeholder for real embeddings
     (an actual embedding model or API call) and wire `SemanticIndex` into
     `ContradictionDetector` so semantically-equivalent claims (not just
     exact predicate/object string matches) get flagged — this is what
     turns the vector index from a standalone module into an actual
-    ML-infra feature of the product. NOT STARTED (same API-key blocker).
+    ML-infra feature of the product. NOT STARTED (same API-key blocker
+    as item 12).
 14. ~~Persist the bandit's learned value estimates~~ — DONE
     (`persistence.py`, wired into `service.py`, verified across a real
     restart). ~~Add a Docker entry so it isn't a manually-started
     script~~ — DONE (`services/extraction/ranking/Dockerfile`, part of
     `docker-compose.yml`). **Still open**: actually call `service.py`'s
-    `POST /rank`/`POST /feedback` from somewhere real (the future
-    extraction service or a UI) instead of curling it by hand — there's
-    still no real caller.
+    `POST /rank`/`POST /feedback` from somewhere real. The extraction
+    service now exists (item 12) but doesn't call ranking yet — natural
+    next step is `extract-and-store` (or a new endpoint) also fetching
+    `/contradictions` from storage and posting them to ranking's
+    `/rank`, closing the loop between all three services.
 15. gRPC + Protocol Buffers between extraction and storage (in addition
     to the public REST API).
 16. ~~Redis: caching layer for storage's hot read paths~~ — DONE
@@ -563,25 +696,35 @@ status.
     extraction/ranking services too, since there's no real traffic to
     those yet — revisit once item 12 exists.
 18. `kind` cluster set up locally + `kubectl apply` of
-    `k8s/storage-deployment.yaml` and `k8s/storage-service.yaml` (written
-    and YAML-validated already, see Current status) against a real
-    cluster; then add extraction + gateway manifests once those services
-    exist. **Partially done**: the storage manifests exist but are
-    unverified against an actual cluster — installing `kind` was out of
-    scope for this session. `docker-compose.yml` now covers local
+    `k8s/storage-deployment.yaml` and `k8s/storage-service.yaml` (or the
+    Helm chart) against a real cluster; then add extraction + gateway
+    manifests once those services exist. **Partially done**: `kind` and
+    `helm` are now both installed (`brew install helm kind`, this
+    session), the manifests/chart exist and are validated, but no
+    cluster has actually been created or deployed to yet — that's the
+    next concrete step, and it's now unblocked (just not done).
+    `docker-compose.yml` now covers local
     multi-service orchestration in the meantime, but that's not the same
     thing as a k8s deployment — don't conflate the two on a resume.
-19. Helm chart packaging (replacing raw k8s YAML).
-20. Terraform for cluster/resource provisioning.
-21. ~~Prometheus metrics endpoint~~ — **partially DONE**: `GET /metrics`
-    exists and is unit tested, recording per-route/status request counts
-    and duration sums in real Prometheus exposition format. Known,
-    accepted limitation recorded above: records raw paths, not templated
-    ones (cardinality risk at real scale). **Still open**: nothing
-    scrapes it yet (no actual Prometheus server pointed at it), no Grafana
-    dashboard, no OpenTelemetry tracing, and it doesn't yet include the
-    bandit's per-category value estimates or the detector's benchmarked
-    latencies as tracked metrics — only raw HTTP request metrics so far.
+19. ~~Helm chart packaging~~ — DONE (`helm/cortexkernel/`), `helm lint` +
+    `helm template` verified. Same "not applied to a real cluster"
+    caveat as the raw manifests in item 18.
+20. Terraform for cluster/resource provisioning — **blocked**, not
+    started: Homebrew's `terraform` formula is gone from homebrew-core,
+    and the HashiCorp tap's bottle needs newer Xcode Command Line Tools
+    than are installed here. Needs a CLT update (a real system change,
+    not something to do unprompted) before this is worth attempting again.
+21. ~~Prometheus metrics endpoint + Grafana dashboard~~ — **DONE and
+    fully verified**, not just configured: `docker-compose.yml` now runs
+    `prometheus` (scraping storage's real `/metrics`) and `grafana` (auto-
+    provisioned datasource + dashboard, both confirmed live via Grafana's
+    own API). Known, accepted limitation recorded above: metrics record
+    raw paths, not templated ones (cardinality risk at real scale).
+    **Still open**: no OpenTelemetry tracing, and the dashboard only
+    covers raw HTTP request metrics — it doesn't yet include the bandit's
+    per-category value estimates or the detector's benchmarked latencies
+    as tracked metrics (both would need new `/metrics`-exposed counters
+    first, they don't emit Prometheus-format data today).
 
 **Tier 4 — presentation, do last:**
 22. React + TypeScript + D3.js web UI visualizing the graph and
