@@ -9,11 +9,11 @@ jobs:
     name: Build and test storage service (C++)
     runs-on: ubuntu-latest
 
-    defaults: 
+    defaults:
       run:
         working-directory: services/storage
-      
-      steps:
+
+    steps:
       - name: Check out repository code
         uses: actions/checkout@v4
 
@@ -30,4 +30,3 @@ jobs:
 
       - name: Run unit tests
         run: ./build/unit_tests
-        
