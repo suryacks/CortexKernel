@@ -4,7 +4,8 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY schemas.py extraction_client.py mock_extraction_client.py app.py ./
+COPY schemas.py extraction_client.py mock_extraction_client.py app.py \
+     grpc_client.py cortexkernel_pb2.py cortexkernel_pb2_grpc.py ./
 
 EXPOSE 8082
 ENV EXTRACTION_BACKEND=mock

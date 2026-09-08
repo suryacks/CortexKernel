@@ -64,16 +64,23 @@ during development, not just compiled:
   caught it, and the fix made it **~47x faster at 10,000 edges** — see
   [docs/BENCHMARKS.md](docs/BENCHMARKS.md) for the exact numbers,
   including the honest tradeoff at small scale.
-- 90 C++ assertions (Catch2) and 28 Python `unittest` cases across four
+- 104 C++ assertions (Catch2) and 28 Python `unittest` cases across four
   services, all green, plus Redis-integration tests that assert for
   real in CI (via a GitHub Actions service container) instead of only
   skipping locally.
+- gRPC verified two ways: natively via an in-process test that starts a
+  real `grpc::Server` and connects a real client to it, and inside
+  Docker — where a real version-compatibility bug (gencode newer than
+  the pinned runtime) was caught and fixed by actually importing the
+  client inside the built container, not just by installing dependencies
+  and assuming it would work. See [docs/GRPC.md](docs/GRPC.md).
 
 ## Tech stack
 
 | Layer | Choice |
 |---|---|
 | Storage engine | C++17, `httplib`, `nlohmann/json`, CMake + FetchContent |
+| Inter-service RPC | gRPC + Protocol Buffers, alongside the REST API |
 | Caching | Redis, via a from-scratch RESP client (no `hiredis`) |
 | API gateway | Python (stdlib `http.server` — no framework dependency) |
 | Extraction | Python, FastAPI, a mock heuristic backend + an Anthropic-backed one |
@@ -88,6 +95,7 @@ during development, not just compiled:
 - [Architecture](docs/ARCHITECTURE.md) — services, data model, design decisions
 - [Contradiction detection](docs/CONTRADICTION_DETECTION.md) — the core idea, in depth
 - [API reference](docs/API.md) — every endpoint, with real examples
+- [gRPC](docs/GRPC.md) — the second protocol into storage, and a real version-compatibility bug it surfaced
 - [Benchmarks](docs/BENCHMARKS.md) — real numbers, reproducible
 - [Deployment](docs/DEPLOYMENT.md) — docker-compose, Kubernetes, Helm, the frontend
 - [Changelog](CHANGELOG.md) — how this was actually built, milestone by milestone
@@ -97,9 +105,10 @@ during development, not just compiled:
 
 Real embeddings and the Anthropic-backed extraction path are written but
 unverified — both need an API key that wasn't available during
-development. gRPC between services and Terraform (blocked on a local
-toolchain version) haven't been started. The bandit ranker isn't wired
-into any real flow yet. All tracked in [`CLAUDE.md`](CLAUDE.md).
+development. Terraform hasn't been started (blocked on a local toolchain
+version). The bandit ranker isn't wired into any real flow yet, and
+gRPC coverage stops at nodes and edges — no contradiction/drift RPCs
+yet. All tracked in [`CLAUDE.md`](CLAUDE.md).
 
 ## License
 

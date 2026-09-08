@@ -78,6 +78,10 @@ CortexKernel/
         node_cache.hpp           — domain-specific cache-aside wrapper: Node <->
                                     JSON <-> RedisClient, kept separate from the
                                     raw protocol client (DONE)
+        grpc_server.hpp          — GrpcStorageService: AddNode/AddEdge/GetNode
+                                    over gRPC, sharing the same GraphStore, WAL,
+                                    and NodeCache as the REST handlers (DONE,
+                                    see docs/GRPC.md and Current status)
         httplib.h                — vendored single-header HTTP library
         json.hpp                 — vendored nlohmann/json single header
       src/
@@ -90,6 +94,7 @@ CortexKernel/
         metrics.cpp
         redis_client.cpp
         node_cache.cpp
+        grpc_server.cpp
         main.cpp                 — HTTP server entrypoint (DONE): loads GraphStore
                                     from the WAL at startup, records every
                                     POST /nodes and POST /edges to the WAL, logs
@@ -97,11 +102,14 @@ CortexKernel/
                                     in Redis (cache-aside on GET, write-through on
                                     POST), exposes GET /metrics, exposes
                                     GET /nodes and GET /edges (list-all, added
-                                    for the web frontend — see web/), and sends
+                                    for the web frontend — see web/), sends
                                     permissive CORS headers (Access-Control-
                                     Allow-Origin: *) plus a catch-all OPTIONS
                                     preflight handler so a browser on a
-                                    different origin/port can call it directly
+                                    different origin/port can call it directly,
+                                    and (when built with gRPC support) starts
+                                    GrpcStorageService on a detached background
+                                    thread on port 50051 alongside the HTTP server
       tests/
         test_graph_store.cpp      — Catch2 unit tests (DONE, passing)
         test_json_translation.cpp — Catch2 unit tests (DONE, passing)
@@ -116,6 +124,15 @@ CortexKernel/
                                     reachable, and actually assert against a
                                     real one when it is (DONE — see Current
                                     status for both cases actually being run)
+        test_grpc_server.cpp     — 4 Catch2 tests, each starting a real
+                                    in-process `grpc::Server` bound to an
+                                    ephemeral port and a real client channel to
+                                    it — not mocked. Covers AddNode+GetNode
+                                    round-trip, GetNode on a missing id,
+                                    AddNode rejecting an invalid type
+                                    (asserts the actual gRPC status code), and
+                                    AddEdge (DONE, only built/run when
+                                    protobuf+gRPC are found — see below)
       bench/
         contradiction_bench.cpp  — latency/throughput microbenchmark for
                                     ContradictionDetector at increasing graph
@@ -128,10 +145,23 @@ CortexKernel/
                                     against ContradictionDetector (DONE, see
                                     Current status for the real numbers)
       CMakeLists.txt              — FetchContent for Catch2, links system
-                                    libsqlite3 for the baseline bench (DONE)
-      Dockerfile / .dockerignore  — multi-stage build (DONE, built and run
-                                    locally with docker build/run — see
-                                    Current status)
+                                    libsqlite3 for the baseline bench, and
+                                    conditionally builds the gRPC service:
+                                    tries `find_package(... CONFIG)` first
+                                    (Homebrew on macOS), falls back to
+                                    pkg-config (Debian/Ubuntu, whose
+                                    `libgrpc++-dev` has no CMake config
+                                    package), skips gRPC entirely if neither
+                                    is found — REST API unaffected either way
+                                    (DONE)
+      Dockerfile / .dockerignore  — multi-stage build, now built from the
+                                    REPO ROOT as context (not services/storage/)
+                                    so it can see ../../proto/, with apt
+                                    packages for protobuf/gRPC via the
+                                    pkg-config path above (DONE, built and run
+                                    locally with docker build/run, both REST
+                                    and gRPC verified inside the container —
+                                    see Current status)
     extraction/                  — Python LLM-based extraction pipeline (DONE
                                     except the actual Anthropic call — see
                                     Current status)
@@ -162,8 +192,22 @@ CortexKernel/
       test_app.py                  — FastAPI `TestClient` unittest suite,
                                     exercises the mock backend, no network
                                     calls (DONE, passing)
-      requirements.txt, Dockerfile — fastapi/uvicorn/httpx/pydantic, built
-                                    and run as a real container (DONE)
+      cortexkernel_pb2.py,
+      cortexkernel_pb2_grpc.py      — generated from proto/cortexkernel.proto
+                                    (DONE — committed, since Python has no
+                                    build-time codegen story the way CMake
+                                    does; regenerate after changing the .proto,
+                                    see docs/GRPC.md)
+      grpc_client.py                — StorageGrpcClient, hand-written wrapper
+                                    around the generated stubs. Verified against
+                                    a real running storage gRPC server (DONE).
+                                    **Not yet called by app.py** — available,
+                                    not wired into the actual extraction flow.
+      requirements.txt, Dockerfile — fastapi/uvicorn/httpx/pydantic/grpcio,
+                                    built and run as a real container (DONE).
+                                    `protobuf` is pinned to `>=7,<8` — see
+                                    docs/GRPC.md for the real version-mismatch
+                                    bug that pin exists to avoid.
       ranking/
         bandit.py                — epsilon-greedy contextual bandit (RL) that
                                     ranks detected contradictions by learned
@@ -254,6 +298,17 @@ CortexKernel/
       HashiCorp tap's bottle needs newer Xcode Command Line Tools than are
       installed here; installing those requires a system software update
       this session isn't going to push through on its own initiative)
+  proto/
+    cortexkernel.proto            — shared gRPC/protobuf schema for storage's
+                                    AddNode/AddEdge/GetNode RPCs; the C++
+                                    stubs are generated at build time (CMake),
+                                    the Python stubs are generated once and
+                                    committed (see docs/GRPC.md) (DONE)
+  .dockerignore                   — repo-root dockerignore (needed once the
+                                    storage Dockerfile started building from
+                                    the repo root instead of services/storage/,
+                                    so unrelated directories like web/node_modules
+                                    or .git don't bloat the build context) (DONE)
   web/                            — React + TypeScript + D3.js graph
                                     visualization dashboard (DONE — see
                                     Current status for how it was verified)
@@ -294,7 +349,12 @@ CortexKernel/
                                     clicking, and the extraction service
                                     actually turning journal text into
                                     real nodes/edges inside storage over
-                                    the compose network)
+                                    the compose network). storage's `build:`
+                                    stanza now uses `context: .` (repo root)
+                                    + an explicit `dockerfile:` path, not
+                                    `./services/storage`, so its Dockerfile
+                                    can see `proto/`; also now publishes
+                                    port 50051 (gRPC) alongside 8080.
   README.md                       — full rewrite (DONE): badges, Mermaid
                                     architecture diagram, quickstart,
                                     "actually been run, not just written"
@@ -322,6 +382,12 @@ CortexKernel/
                                     kind/Kubernetes, Helm, the frontend dev
                                     server — including the mbot port-8080
                                     gotcha as a documented caveat (DONE)
+    GRPC.md                        — the second protocol into storage: what
+                                    it does, how the C++/Python build paths
+                                    both find protobuf/gRPC, and the real
+                                    protobuf gencode/runtime version bug
+                                    found while wiring up the Python side
+                                    (DONE)
   .gitignore
 ```
 
@@ -488,6 +554,35 @@ status.
   moments later once Redis comes up (verified — see Current status).
   Don't treat that one log line as authoritative; if this needs to be
   trustworthy later, it should retry/refresh instead of checking once.
+- **gRPC runs inside the same process as the REST server, sharing the
+  same `GraphStore`/`WalWriter`/`NodeCache`, not as a separate service
+  with its own store** — `main.cpp` spawns `GrpcStorageService` on a
+  detached background thread before `svr.listen()` blocks the main
+  thread. This was a deliberate choice over a standalone
+  `grpc_main.cpp` executable specifically so the two protocols are
+  genuinely two doors into the same building, not two independent
+  siloed graphs that happen to share a name. Verified: a node added via
+  gRPC is immediately visible via REST, and lands in the same WAL file.
+- **CMake detects protobuf/gRPC two ways on purpose**: `find_package(...
+  CONFIG)` first (what Homebrew's builds provide on macOS), falling back
+  to `pkg-config` (what Debian/Ubuntu's `libgrpc++-dev` provides instead
+  — it ships no CMake config package at all, a genuine packaging gap).
+  If neither path finds them, the gRPC service is skipped entirely and
+  `storage_server` still builds REST-only — this is why CI (no
+  protobuf/gRPC installed) stays green without needing those packages.
+  Don't "simplify" this to a single `find_package(... CONFIG REQUIRED)`
+  — that breaks the Ubuntu/Docker build path, which was verified to
+  need the pkg-config fallback for real (see Current status).
+- **Generated Python protobuf stubs are committed, not regenerated at
+  build/install time** — unlike the C++ side (CMake generates them into
+  the build directory), Python has no equivalent build-time codegen
+  convention most people reach for, so `cortexkernel_pb2.py` and
+  `cortexkernel_pb2_grpc.py` are checked into `services/extraction/`
+  directly. Whoever regenerates them must also update
+  `requirements.txt`'s `protobuf` pin to match the `protobuf`/
+  `grpcio-tools` version used for codegen — see the version-mismatch bug
+  in Current status and `docs/GRPC.md` for exactly why that pin matters
+  and isn't just conservative-for-its-own-sake.
 
 ## Current status (as of last session)
 
@@ -773,6 +868,75 @@ status.
   manual review; GitHub and most Markdown viewers render Mermaid
   natively, so check this the first time either file is viewed on
   GitHub.
+- **gRPC + Protocol Buffers between extraction and storage: built and
+  verified thoroughly, in two separate environments.** `protobuf` and
+  `grpc` installed via Homebrew (`brew install protobuf grpc`) —
+  bottled, no compilation, unlike Terraform's earlier CLT problem.
+  `proto/cortexkernel.proto` defines `AddNode`/`AddEdge`/`GetNode`.
+  `GrpcStorageService` runs on a background thread inside the same
+  `storage_server` process as the REST API, sharing the same
+  `GraphStore`, `WalWriter`, and `NodeCache`.
+  - **C++ side, native (Homebrew/macOS)**: `cmake -B build` found
+    protobuf/gRPC via `find_package(... CONFIG)`, generated the C++
+    stubs, and built cleanly. 4 new Catch2 tests
+    (`test_grpc_server.cpp`) each start a real in-process `grpc::Server`
+    on an ephemeral port and connect a real client channel — no
+    mocking. All pass: AddNode+GetNode round-trip, GetNode on a missing
+    id, AddNode rejecting an invalid type with a real
+    `INVALID_ARGUMENT` status, AddEdge. Full suite: **104 C++ assertions
+    across 37 test cases**, up from 90/33.
+  - **Python side**: generated `cortexkernel_pb2.py`/`cortexkernel_pb2_grpc.py`
+    via `grpc_tools.protoc`, wrote `grpc_client.py`. Ran a real Python
+    client against the real running gRPC server: `AddNode` then
+    `GetNode` round-tripped correctly, and — the actual point of this
+    integration — a node added via gRPC was confirmed retrievable via
+    the REST API (`GET /nodes/:id`) and present in the WAL file,
+    proving both protocols share one backend, not two siloed graphs.
+  - **Docker/Linux side, verified separately and it did NOT work on the
+    first attempt — real problems, really fixed:**
+    1. `find_package(... CONFIG)` found nothing on Ubuntu — apt's
+       `libgrpc++-dev` ships no CMake config package. Fixed by adding a
+       `pkg-config` fallback path in `CMakeLists.txt` (confirmed via a
+       throwaway `ubuntu:22.04` container that `grpc++.pc`/`protobuf.pc`
+       exist even though no `gRPCConfig.cmake` does).
+    2. The storage Dockerfile's build context was `./services/storage`,
+       which can't see `../../proto/`. Fixed by changing
+       `docker-compose.yml`'s storage service to `context: .` (repo
+       root) with an explicit `dockerfile:` path, and adding a
+       repo-root `.dockerignore` so the wider context doesn't pull in
+       `.git`, `node_modules`, etc.
+    3. The built container crashed on startup:
+       `error while loading shared libraries: libgrpc++.so.1`. The
+       slim runtime stage only had `libstdc++6`. Fixed by adding the
+       actual runtime shared-lib packages (`libgrpc++1`, `libgrpc10`,
+       `libprotobuf23`, `libssl3`, `libc-ares2`, `zlib1g`) — found via
+       `apt-cache search` in a throwaway container, not guessed.
+    4. The Python side had a separate real bug: `cortexkernel_pb2.py`
+       was generated with `protobuf` 7.36.1 (whatever was locally
+       installed), but `requirements.txt` pinned `protobuf<6` for the
+       container — a genuine `VersionError: Detected incompatible
+       Protobuf Gencode/Runtime versions` at import time inside the
+       built image. Caught by actually running
+       `python3 -c "import grpc_client"` inside the container, not by
+       assuming pip install succeeding meant it worked. Fixed by
+       pinning `requirements.txt` to `protobuf>=7,<8` to match what
+       was actually used for codegen.
+    After all four fixes: rebuilt the storage image, ran it as a real
+    container, confirmed `/health` (REST) and a real Python gRPC client
+    calling `AddNode`/`GetNode` against `localhost:<mapped-50051>` both
+    worked, and confirmed the gRPC-added node was visible via the
+    container's REST API too. Full details and the exact fixes in
+    `docs/GRPC.md`.
+  - **Known, documented inconsistency**: nodes created via gRPC get an
+    empty `layer` field; REST-created nodes default it to `"life"`
+    (a `json_translation.cpp` DTO default that `grpc_server.cpp`
+    doesn't share, since it builds a `Node` directly rather than going
+    through `node_from_json()`). Minor, real, flagged in `docs/GRPC.md`
+    — not fixed this session.
+  - **What's still not done**: no gRPC coverage for
+    `/contradictions`/`/drift`; `grpc_client.py` exists but nothing
+    calls it from `app.py` yet; no TLS (insecure credentials only, fine
+    for local dev).
 
 ## Roadmap (prioritized, in order)
 
@@ -833,8 +997,14 @@ status.
     next step is `extract-and-store` (or a new endpoint) also fetching
     `/contradictions` from storage and posting them to ranking's
     `/rank`, closing the loop between all three services.
-15. gRPC + Protocol Buffers between extraction and storage (in addition
-    to the public REST API).
+15. ~~gRPC + Protocol Buffers~~ — DONE for nodes/edges (`AddNode`,
+    `AddEdge`, `GetNode`), verified both natively (Homebrew, in-process
+    Catch2 tests against a real server) and inside Docker (a real
+    version-mismatch bug and a real missing-shared-libs bug, both found
+    and fixed — see Current status and `docs/GRPC.md`). **Still open**:
+    no gRPC path for contradictions/drift, and `grpc_client.py` isn't
+    called from `app.py`'s actual extraction flow yet — it's available,
+    not integrated.
 16. ~~Redis: caching layer for storage's hot read paths~~ — DONE
     (`RedisClient` + `NodeCache`, wired into `POST/GET /nodes`), verified
     against a real local Redis and again over real docker-compose

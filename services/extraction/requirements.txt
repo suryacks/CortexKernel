@@ -2,3 +2,5 @@ fastapi>=0.110,<1
 uvicorn[standard]>=0.29,<1
 httpx>=0.27,<1
 pydantic>=2,<3
+grpcio>=1.60,<2
+protobuf>=7,<8

@@ -8,6 +8,12 @@
 #include "../include/persistence.hpp"
 #include "../include/redis_client.hpp"
 
+#ifdef CORTEXKERNEL_GRPC_ENABLED
+#include "../include/grpc_server.hpp"
+#include <grpcpp/grpcpp.h>
+#include <thread>
+#endif
+
 #include <chrono>
 #include <cstdlib>
 #include <iostream>
@@ -37,6 +43,18 @@ int main() {
     int redis_port = std::stoi(env_or("REDIS_PORT", "6379"));
     kg::RedisClient redis_client(redis_host, redis_port);
     kg::NodeCache node_cache(redis_client, 60);
+
+#ifdef CORTEXKERNEL_GRPC_ENABLED
+    kg::GrpcStorageService grpc_service(store, wal, node_cache);
+    const std::string grpc_address = "0.0.0.0:50051";
+    grpc::ServerBuilder grpc_builder;
+    grpc_builder.AddListeningPort(grpc_address, grpc::InsecureServerCredentials());
+    grpc_builder.RegisterService(&grpc_service);
+    std::unique_ptr<grpc::Server> grpc_server = grpc_builder.BuildAndStart();
+    std::thread grpc_thread([&grpc_server]() { grpc_server->Wait(); });
+    grpc_thread.detach();
+    kg::log::info("gRPC storage service listening", {{"address", grpc_address}});
+#endif
 
     httplib::Server svr;
     svr.set_default_headers({{"Access-Control-Allow-Origin", "*"}});

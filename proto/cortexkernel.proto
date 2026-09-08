@@ -1,0 +1,42 @@
+syntax = "proto3";
+
+package cortexkernel;
+
+service CortexKernelStorage {
+  rpc AddNode(NodeRequest) returns (NodeReply);
+  rpc AddEdge(EdgeRequest) returns (EdgeReply);
+  rpc GetNode(GetNodeRequest) returns (NodeReply);
+}
+
+message NodeRequest {
+  string id = 1;
+  string type = 2;
+  string name = 3;
+}
+
+message NodeReply {
+  bool found = 1;
+  string id = 2;
+  string type = 3;
+  string name = 4;
+}
+
+message EdgeRequest {
+  string id = 1;
+  string from = 2;
+  string predicate = 3;
+  string to = 4;
+  string edge_class = 5;
+}
+
+message EdgeReply {
+  string id = 1;
+  string from = 2;
+  string predicate = 3;
+  string to = 4;
+  string edge_class = 5;
+}
+
+message GetNodeRequest {
+  string id = 1;
+}

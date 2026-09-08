@@ -1,0 +1,11 @@
+.git
+node_modules
+__pycache__
+*.pyc
+.venv
+services/storage/build
+web/dist
+web/node_modules
+*.wal
+*.db
+bandit_state.json
