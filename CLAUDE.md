@@ -95,7 +95,13 @@ CortexKernel/
                                     POST /nodes and POST /edges to the WAL, logs
                                     structured startup/error events, caches nodes
                                     in Redis (cache-aside on GET, write-through on
-                                    POST), and exposes GET /metrics
+                                    POST), exposes GET /metrics, exposes
+                                    GET /nodes and GET /edges (list-all, added
+                                    for the web frontend — see web/), and sends
+                                    permissive CORS headers (Access-Control-
+                                    Allow-Origin: *) plus a catch-all OPTIONS
+                                    preflight handler so a browser on a
+                                    different origin/port can call it directly
       tests/
         test_graph_store.cpp      — Catch2 unit tests (DONE, passing)
         test_json_translation.cpp — Catch2 unit tests (DONE, passing)
@@ -249,7 +255,26 @@ CortexKernel/
       installed here; installing those requires a system software update
       this session isn't going to push through on its own initiative)
   web/                            — React + TypeScript + D3.js graph
-    visualization dashboard (PLANNED, Tier 4)
+                                    visualization dashboard (DONE — see
+                                    Current status for how it was verified)
+    package.json, tsconfig.json, vite.config.ts — Vite + React + TS, D3 for
+                                    the graph rendering. `npm run build`
+                                    (tsc -b && vite build) actually run and
+                                    passes, `npm run dev` actually started
+                                    and served real modules.
+    index.html, src/main.tsx      — app entrypoint
+    src/api.ts                    — typed fetch wrappers for GET /nodes,
+                                    GET /edges, GET /contradictions
+                                    (VITE_API_URL env var, defaults to
+                                    http://localhost:8080)
+    src/GraphView.tsx             — D3 force-directed graph: draggable
+                                    nodes, nodes involved in a detected
+                                    contradiction rendered in red
+    src/ContradictionsPanel.tsx   — plain-text list of detected
+                                    contradictions below the graph
+    src/App.tsx                   — wires the three fetches together on
+                                    mount, computes the contradicted-node
+                                    set, renders GraphView + ContradictionsPanel
   .github/workflows/
     ci.yml                       — builds + runs C++ tests on every push,
                                     now with a `redis` service container so
@@ -670,6 +695,43 @@ status.
   rediscovering this; ask Surya to update CLT first, or just skip
   Terraform and keep `docker-compose.yml` as the local-orchestration
   story (they overlap in purpose for local dev).
+- **Backend additions for the frontend, verified**: `GraphStore::all_nodes()`
+  plus `GET /nodes` and `GET /edges` (list-all), and permissive CORS
+  (`Access-Control-Allow-Origin: *` + a catch-all `OPTIONS` preflight
+  handler). All verified by hand: seeded two `lives_in` facts (NYC and
+  LA) for `self`, confirmed `GET /nodes`/`GET /edges` return the full
+  set, confirmed `/contradictions` correctly flags the NYC/LA conflict,
+  confirmed a real `OPTIONS` preflight returns `204` with the right
+  `Access-Control-*` headers.
+- **Frontend (`web/`): built, type-checked, and actually run — not just
+  written.** `npm install` + `npm run build` (`tsc -b && vite build`)
+  both succeeded for real (one real TypeScript error was caught and
+  fixed along the way: D3's `.selectAll('circle')` needed an explicit
+  `<SVGCircleElement, SimNode>` type parameter, otherwise `.call(drag)`
+  didn't type-check — a genuine type-safety catch, not a formality).
+  `npm run dev` (Vite) was started for real and confirmed serving
+  `index.html` and every `.tsx` module correctly. **What was NOT done**:
+  no headless browser was available in this session to screenshot the
+  actual rendered DOM/SVG, so the *rendering* itself (React mounting,
+  D3 drawing circles/links, the drag behavior working) is verified only
+  by (a) a clean type-checked build and (b) confirming the exact JSON
+  shape the API returns matches what `api.ts`'s TypeScript interfaces
+  expect, fed with real contradiction data from a live `storage_server`.
+  That's strong but not the same as "someone looked at it in a browser."
+  Worth actually opening it in a browser next session to eyeball-verify.
+- **Found and worked around an unrelated local port conflict, not a
+  CortexKernel bug**: port 8080 was occupied by an unrelated project on
+  this machine (`~/GitHub Projects/MarketsBot`, its `mbot dashboard
+  --port 8080` process), which silently absorbed every curl request
+  during testing and made it look like `storage_server` was completely
+  broken (every route 404ing, including `/health`) — it wasn't; the
+  real server was simply failing to bind port 8080 and never actually
+  received the requests. Diagnosed with `lsof -nP -iTCP:8080
+  -sTCP:LISTEN`. Worked around it for this session's testing by
+  temporarily building and running a copy on port 18888 rather than
+  killing someone else's unrelated running process. **If `storage_server`
+  seems to not respond or 404s on everything in a future session, check
+  for this before assuming the code broke** — it didn't, last time.
 - README: not started.
 
 ## Roadmap (prioritized, in order)
@@ -780,11 +842,20 @@ status.
     first, they don't emit Prometheus-format data today).
 
 **Tier 4 — presentation, do last:**
-22. React + TypeScript + D3.js web UI visualizing the graph and
-    surfacing detected contradictions, ranked by the bandit.
+22. ~~React + TypeScript + D3.js web UI visualizing the graph~~ — DONE,
+    built and type-checked (see Current status for the exact verification
+    and its one honest gap — never opened in an actual browser this
+    session). **Still open**: it doesn't yet surface contradictions
+    ranked by the bandit — right now `ContradictionsPanel` just lists
+    them in whatever order `/contradictions` returns; wiring in
+    `EpsilonGreedyRanker` would mean either storage calling the ranking
+    service before responding, or the frontend calling both APIs and
+    merging client-side.
 23. Full README rewrite: architecture diagram (Mermaid), badges, "why I
     built this," benchmark numbers (detector latency before/after the
-    Tier 2 fix, semantic search vs. exact match) front and center.
+    Tier 2 fix, semantic search vs. exact match) front and center. This
+    is now the single largest remaining piece of unstarted work in the
+    whole roadmap.
 
 ## Working conventions for Claude Code sessions on this repo
 

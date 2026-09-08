@@ -7,3 +7,6 @@ __pycache__/
 build/
 .env
 k8s/secret.yaml
+node_modules/
+dist/
+*.tsbuildinfo

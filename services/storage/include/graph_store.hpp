@@ -13,6 +13,7 @@ public:
     void add_edge(const Edge& edge);
 
     const Node* get_node(const std::string& id) const;
+    std::vector<const Node*> all_nodes() const;
 
     std::vector<const Edge*> edges_from(const std::string& subject_id) const;
     std::vector<const Edge*> edges_to(const std::string& object_id) const;

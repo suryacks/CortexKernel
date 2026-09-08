@@ -39,6 +39,12 @@ int main() {
     kg::NodeCache node_cache(redis_client, 60);
 
     httplib::Server svr;
+    svr.set_default_headers({{"Access-Control-Allow-Origin", "*"}});
+    svr.Options(R"(.*)", [](const httplib::Request&, httplib::Response& res) {
+        res.set_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+        res.set_header("Access-Control-Allow-Headers", "Content-Type, X-API-Key");
+        res.status = 204;
+    });
 
     kg::log::info("storage service starting", {
         {"wal_path", wal_path},
@@ -101,6 +107,22 @@ int main() {
         node_cache.put(*n);
         res.set_header("X-Cache", "MISS");
         res.set_content(kg::node_to_json(*n).dump(), "application/json");
+    });
+
+    svr.Get("/nodes", [&store](const httplib::Request&, httplib::Response& res) {
+        json result = json::array();
+        for (const auto* n : store.all_nodes()) {
+            result.push_back(kg::node_to_json(*n));
+        }
+        res.set_content(result.dump(), "application/json");
+    });
+
+    svr.Get("/edges", [&store](const httplib::Request&, httplib::Response& res) {
+        json result = json::array();
+        for (const auto* e : store.all_edges()) {
+            result.push_back(kg::edge_to_json(*e));
+        }
+        res.set_content(result.dump(), "application/json");
     });
 
     svr.Post("/edges", [&store, &wal](const httplib::Request& req, httplib::Response& res) {

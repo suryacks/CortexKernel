@@ -18,6 +18,15 @@ const Node* GraphStore::get_node(const std::string& id) const {
     return &(it->second);
 }
 
+std::vector<const Node*> GraphStore::all_nodes() const {
+    std::vector<const Node*> result;
+    result.reserve(nodes_.size());
+    for (const auto& pair : nodes_) {
+        result.push_back(&(pair.second));
+    }
+    return result;
+}
+
 std::vector<const Edge*> GraphStore::edges_from(const std::string& subject_id) const {
     std::vector<const Edge*> result;
     for (const auto& pair : edges_) {
