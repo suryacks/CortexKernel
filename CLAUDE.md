@@ -295,7 +295,33 @@ CortexKernel/
                                     actually turning journal text into
                                     real nodes/edges inside storage over
                                     the compose network)
-  README.md                      — needs full writeup (NOT STARTED)
+  README.md                       — full rewrite (DONE): badges, Mermaid
+                                    architecture diagram, quickstart,
+                                    "actually been run, not just written"
+                                    section with real verified claims,
+                                    tech stack table, links to docs/
+  CHANGELOG.md                    — narrative build history grouped by
+                                    milestone, derived from real `git log`
+                                    (DONE)
+  LICENSE                         — MIT (DONE)
+  docs/
+    ARCHITECTURE.md                — services, data model, design
+                                    decisions, a Mermaid diagram (DONE)
+    CONTRADICTION_DETECTION.md     — deep dive on the one novel idea:
+                                    the three detectors, the five drift
+                                    states, and the real O(n²) perf story
+                                    (DONE)
+    BENCHMARKS.md                  — the real numbers from Current status
+                                    below, including the honest small-scale
+                                    regression the fix introduces, not
+                                    just the flattering 10k-edge number
+                                    (DONE)
+    API.md                         — every HTTP endpoint across all 4
+                                    services, with real curl examples (DONE)
+    DEPLOYMENT.md                  — docker-compose, bare-metal build,
+                                    kind/Kubernetes, Helm, the frontend dev
+                                    server — including the mbot port-8080
+                                    gotcha as a documented caveat (DONE)
   .gitignore
 ```
 
@@ -732,7 +758,21 @@ status.
   killing someone else's unrelated running process. **If `storage_server`
   seems to not respond or 404s on everything in a future session, check
   for this before assuming the code broke** — it didn't, last time.
-- README: not started.
+- **Documentation: full rewrite done.** `README.md`, `LICENSE`,
+  `CHANGELOG.md`, and `docs/{ARCHITECTURE,CONTRADICTION_DETECTION,
+  BENCHMARKS,API,DEPLOYMENT}.md`. Every fact and number in these was
+  pulled from this file's own prior Current-status entries — nothing was
+  invented or re-estimated for the docs. Verified the test counts quoted
+  (90 C++ assertions / 33 test cases, 28 Python `unittest` cases across
+  ranking/gateway/extraction) by actually re-running all four suites
+  fresh before writing them down, rather than trusting older text in
+  this file that predated the extraction service's tests. Not
+  independently verified: that the two Mermaid diagrams
+  (`README.md`, `docs/ARCHITECTURE.md`) actually render — no Mermaid
+  renderer was available in this session to check syntax beyond careful
+  manual review; GitHub and most Markdown viewers render Mermaid
+  natively, so check this the first time either file is viewed on
+  GitHub.
 
 ## Roadmap (prioritized, in order)
 
@@ -851,11 +891,19 @@ status.
     `EpsilonGreedyRanker` would mean either storage calling the ranking
     service before responding, or the frontend calling both APIs and
     merging client-side.
-23. Full README rewrite: architecture diagram (Mermaid), badges, "why I
-    built this," benchmark numbers (detector latency before/after the
-    Tier 2 fix, semantic search vs. exact match) front and center. This
-    is now the single largest remaining piece of unstarted work in the
-    whole roadmap.
+23. ~~Full README rewrite~~ — DONE: `README.md` (badges, Mermaid diagram,
+    quickstart, tech stack table), plus `LICENSE` (MIT), `CHANGELOG.md`
+    (built from real `git log`, not invented), and a `docs/` folder
+    (`ARCHITECTURE.md`, `CONTRADICTION_DETECTION.md`, `BENCHMARKS.md`,
+    `API.md`, `DEPLOYMENT.md`). Every number in `BENCHMARKS.md` was
+    pulled from this file's own Current status entries, not re-derived
+    or estimated — including the honest small-scale regression the O(n²)
+    fix introduces at 100 edges, which the docs report rather than hide.
+    **Still open**: the "semantic search vs. exact match" comparison
+    mentioned in the old version of this item doesn't exist yet, because
+    `SemanticIndex` still isn't wired into `ContradictionDetector` (see
+    item 13) — there's nothing to benchmark yet. Don't add that section
+    to the docs until item 13 is actually done.
 
 ## Working conventions for Claude Code sessions on this repo
 
