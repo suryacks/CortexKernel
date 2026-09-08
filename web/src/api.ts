@@ -24,9 +24,10 @@ export interface Contradiction {
 }
 
 const API_BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:8080'
+const EXTRACTION_API_BASE = import.meta.env.VITE_EXTRACTION_API_URL ?? 'http://localhost:8082'
 
-async function getJson<T>(path: string): Promise<T> {
-  const response = await fetch(`${API_BASE}${path}`)
+async function getJson<T>(base: string, path: string): Promise<T> {
+  const response = await fetch(`${base}${path}`)
   if (!response.ok) {
     throw new Error(`${path} failed with status ${response.status}`)
   }
@@ -34,13 +35,33 @@ async function getJson<T>(path: string): Promise<T> {
 }
 
 export function fetchNodes(): Promise<NodeDto[]> {
-  return getJson<NodeDto[]>('/nodes')
+  return getJson<NodeDto[]>(API_BASE, '/nodes')
 }
 
 export function fetchEdges(): Promise<EdgeDto[]> {
-  return getJson<EdgeDto[]>('/edges')
+  return getJson<EdgeDto[]>(API_BASE, '/edges')
 }
 
 export function fetchContradictions(): Promise<Contradiction[]> {
-  return getJson<Contradiction[]>('/contradictions')
+  return getJson<Contradiction[]>(API_BASE, '/contradictions')
+}
+
+export async function fetchRankedContradictions(): Promise<Contradiction[]> {
+  const response = await fetch(`${EXTRACTION_API_BASE}/contradictions/ranked`)
+  if (!response.ok) {
+    throw new Error(`/contradictions/ranked failed with status ${response.status}`)
+  }
+  const body = (await response.json()) as { ranked: Contradiction[] }
+  return body.ranked
+}
+
+export async function submitFeedback(category: string, reward: number): Promise<void> {
+  const response = await fetch(`${EXTRACTION_API_BASE}/feedback`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ category, reward }),
+  })
+  if (!response.ok) {
+    throw new Error(`/feedback failed with status ${response.status}`)
+  }
 }

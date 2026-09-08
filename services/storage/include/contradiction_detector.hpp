@@ -30,6 +30,7 @@ public:
 
     std::vector<Contradiction> find_direct_contradictions() const;
     std::vector<Contradiction> find_value_behavior_mismatches() const;
+    std::vector<Contradiction> find_semantic_value_behavior_mismatches(float similarity_threshold = 0.5f) const;
     DriftState classify_drift(const std::string& subject_id, const std::string& predicate) const;
 
 private:

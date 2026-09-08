@@ -108,6 +108,7 @@ add_executable(unit_tests
     tests/test_graph_store.cpp
     tests/test_json_translation.cpp
     tests/test_contradiction_detector.cpp
+    tests/test_semantic_contradictions.cpp
     tests/test_semantic_index.cpp
     tests/test_metrics.cpp
     tests/test_redis_client.cpp

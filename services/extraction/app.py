@@ -5,7 +5,8 @@ from fastapi import FastAPI, HTTPException
 
 from extraction_client import AnthropicExtractionClient, ExtractionClient
 from mock_extraction_client import MockExtractionClient
-from schemas import ExtractRequest, ExtractionResult
+from ranking_client import rank_contradictions, submit_feedback
+from schemas import ExtractRequest, ExtractionResult, FeedbackRequest
 
 STORAGE_URL = os.environ.get("STORAGE_URL", "http://localhost:8080")
 
@@ -51,3 +52,18 @@ def extract_and_store(request: ExtractRequest):
             stored_edges.append(response.json())
 
     return {"nodes": stored_nodes, "edges": stored_edges}
+
+
+@app.get("/contradictions/ranked")
+def contradictions_ranked():
+    with httpx.Client(timeout=10.0) as http:
+        response = http.get(f"{STORAGE_URL}/contradictions")
+        response.raise_for_status()
+        contradictions = response.json()
+
+    return {"ranked": rank_contradictions(contradictions)}
+
+
+@app.post("/feedback")
+def feedback(request: FeedbackRequest):
+    return submit_feedback(request.category, request.reward)

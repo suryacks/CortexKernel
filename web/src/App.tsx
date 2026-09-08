@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react'
-import { fetchContradictions, fetchEdges, fetchNodes } from './api'
+import { useCallback, useEffect, useState } from 'react'
+import { fetchEdges, fetchNodes, fetchRankedContradictions, submitFeedback } from './api'
 import type { Contradiction, EdgeDto, NodeDto } from './api'
 import GraphView from './GraphView'
 import ContradictionsPanel from './ContradictionsPanel'
@@ -10,15 +10,27 @@ export default function App() {
   const [contradictions, setContradictions] = useState<Contradiction[]>([])
   const [error, setError] = useState<string | null>(null)
 
-  useEffect(() => {
-    Promise.all([fetchNodes(), fetchEdges(), fetchContradictions()])
-      .then(([n, e, c]) => {
-        setNodes(n)
-        setEdges(e)
-        setContradictions(c)
-      })
+  const loadContradictions = useCallback(() => {
+    fetchRankedContradictions()
+      .then(setContradictions)
       .catch((err) => setError(String(err)))
   }, [])
+
+  useEffect(() => {
+    Promise.all([fetchNodes(), fetchEdges()])
+      .then(([n, e]) => {
+        setNodes(n)
+        setEdges(e)
+      })
+      .catch((err) => setError(String(err)))
+    loadContradictions()
+  }, [loadContradictions])
+
+  const handleFeedback = (category: string, reward: number) => {
+    submitFeedback(category, reward)
+      .then(loadContradictions)
+      .catch((err) => setError(String(err)))
+  }
 
   const contradictedNodeIds = new Set<string>()
   for (const c of contradictions) {
@@ -31,8 +43,8 @@ export default function App() {
       <h1>CortexKernel</h1>
       {error && <p style={{ color: 'red' }}>{error}</p>}
       <GraphView nodes={nodes} edges={edges} contradictedNodeIds={contradictedNodeIds} />
-      <h2>Detected contradictions</h2>
-      <ContradictionsPanel contradictions={contradictions} />
+      <h2>Detected contradictions (ranked)</h2>
+      <ContradictionsPanel contradictions={contradictions} onFeedback={handleFeedback} />
     </div>
   )
 }

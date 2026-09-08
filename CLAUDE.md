@@ -64,7 +64,11 @@ CortexKernel/
         graph_types.hpp          — Node, Edge, NodeType, EdgeClass (DONE)
         graph_store.hpp          — in-memory storage engine (DONE)
         contradiction_detector.hpp — direct-contradiction, value/behavior
-                                      mismatch, and drift-state detectors (DONE)
+                                      mismatch, drift-state, and (new)
+                                      semantic value/behavior mismatch
+                                      detectors (DONE — see Current status
+                                      for exactly what "semantic" does and
+                                      doesn't mean here)
         json_translation.hpp     — DTO layer, JSON <-> C++ types (DONE)
         persistence.hpp          — WAL-based durability for GraphStore (DONE, wired into main.cpp)
         semantic_index.hpp       — embedding + cosine-similarity vector index (DONE, placeholder embeddings)
@@ -109,11 +113,23 @@ CortexKernel/
                                     different origin/port can call it directly,
                                     and (when built with gRPC support) starts
                                     GrpcStorageService on a detached background
-                                    thread on port 50051 alongside the HTTP server
+                                    thread on port 50051 alongside the HTTP
+                                    server. Also exposes
+                                    GET /contradictions/semantic?threshold=0.5
+                                    (find_semantic_value_behavior_mismatches)
       tests/
         test_graph_store.cpp      — Catch2 unit tests (DONE, passing)
         test_json_translation.cpp — Catch2 unit tests (DONE, passing)
         test_contradiction_detector.cpp — Catch2 unit tests (DONE, passing)
+        test_semantic_contradictions.cpp — 5 Catch2 tests for
+                                    find_semantic_value_behavior_mismatches():
+                                    flags near-identical text, ignores
+                                    unrelated text, skips exact
+                                    subject+predicate+object duplicates,
+                                    respects the threshold, ignores subjects
+                                    with no BehaviorEvidence edges at all
+                                    (DONE, passing — verified over real HTTP
+                                    too, see Current status)
         test_semantic_index.cpp  — Catch2 unit tests (DONE, passing)
         test_metrics.cpp         — Catch2 unit tests (DONE, passing)
         test_redis_client.cpp    — Catch2 unit tests: one pure failure-mode test
@@ -188,7 +204,13 @@ CortexKernel/
                                     `POST /extract-and-store` (extracts, then
                                     POSTs each node/edge to the storage
                                     service's real REST API) (DONE, verified
-                                    end-to-end — see Current status)
+                                    end-to-end — see Current status). Also now
+                                    `GET /contradictions/ranked` (fetches
+                                    storage's `/contradictions`, ranks via
+                                    `ranking_client`) and `POST /feedback`
+                                    (forwards to ranking) — the actual closed
+                                    detection-to-ranking loop, see
+                                    docs/CONTRADICTION_RANKING.md
       test_app.py                  — FastAPI `TestClient` unittest suite,
                                     exercises the mock backend, no network
                                     calls (DONE, passing)
@@ -201,8 +223,42 @@ CortexKernel/
       grpc_client.py                — StorageGrpcClient, hand-written wrapper
                                     around the generated stubs. Verified against
                                     a real running storage gRPC server (DONE).
-                                    **Not yet called by app.py** — available,
-                                    not wired into the actual extraction flow.
+                                    Still not called by app.py's actual
+                                    extraction flow — available, not integrated.
+      test_grpc_client.py           — 4 unittest cases against a real
+                                    in-process Python gRPC server (a small
+                                    `FakeServicer`, not the C++ binary) — tests
+                                    the client's request/response handling,
+                                    including the `from`/`to` reserved-keyword
+                                    field workaround, without needing the C++
+                                    build at all (DONE, passing — this closed
+                                    a real gap: grpc_client.py had zero test
+                                    coverage before this round)
+      ranking_client.py              — contradiction_to_rank_item() (pure,
+                                    tested), rank_contradictions() (POSTs to
+                                    ranking's /rank, re-orders the original
+                                    contradiction objects by the returned
+                                    ranking), submit_feedback() (POSTs to
+                                    ranking's /feedback) (DONE — see
+                                    docs/CONTRADICTION_RANKING.md for the
+                                    full verified end-to-end loop)
+      test_ranking_client.py         — unittest for the pure
+                                    contradiction_to_rank_item() function and
+                                    the empty-input case (DONE, passing)
+      test_app_ranking.py            — unittest for app.py's
+                                    GET /contradictions/ranked and
+                                    POST /feedback routes, with
+                                    rank_contradictions/submit_feedback/httpx.Client
+                                    mocked out (no real network) (DONE, passing
+                                    — first attempt at the storage-call mock
+                                    had a real self-reference bug: patching
+                                    `app.httpx.Client` also patched the
+                                    `httpx.Client` call *inside* the
+                                    replacement used to build the mock,
+                                    since `app.httpx` is the same module
+                                    object as the top-level `httpx` import;
+                                    fixed with a plain `MagicMock` instead of
+                                    a real `httpx.Client`+`MockTransport`)
       requirements.txt, Dockerfile — fastapi/uvicorn/httpx/pydantic/grpcio,
                                     built and run as a real container (DONE).
                                     `protobuf` is pinned to `>=7,<8` — see
@@ -320,16 +376,31 @@ CortexKernel/
     index.html, src/main.tsx      — app entrypoint
     src/api.ts                    — typed fetch wrappers for GET /nodes,
                                     GET /edges, GET /contradictions
-                                    (VITE_API_URL env var, defaults to
-                                    http://localhost:8080)
+                                    (VITE_API_URL, defaults to
+                                    http://localhost:8080), plus
+                                    fetchRankedContradictions() and
+                                    submitFeedback() against the extraction
+                                    service (VITE_EXTRACTION_API_URL,
+                                    defaults to http://localhost:8082)
     src/GraphView.tsx             — D3 force-directed graph: draggable
                                     nodes, nodes involved in a detected
                                     contradiction rendered in red
-    src/ContradictionsPanel.tsx   — plain-text list of detected
-                                    contradictions below the graph
-    src/App.tsx                   — wires the three fetches together on
-                                    mount, computes the contradicted-node
-                                    set, renders GraphView + ContradictionsPanel
+    src/FeedbackButtons.tsx        — "Useful"/"Dismiss" buttons, calls
+                                    submitFeedback() then triggers a
+                                    re-fetch of the ranked list (DONE)
+    src/ContradictionsPanel.tsx   — list of detected contradictions,
+                                    ranked order, each with FeedbackButtons
+                                    (DONE — now driven by
+                                    fetchRankedContradictions(), not the
+                                    raw unranked storage endpoint)
+    src/App.tsx                   — fetches nodes/edges (storage, direct)
+                                    and ranked contradictions (extraction)
+                                    as two independent effects — so a down
+                                    extraction service degrades the
+                                    contradictions list, not the whole
+                                    graph view — computes the
+                                    contradicted-node set, wires feedback
+                                    clicks to a re-fetch
   .github/workflows/
     ci.yml                       — builds + runs C++ tests on every push,
                                     now with a `redis` service container so
@@ -349,7 +420,14 @@ CortexKernel/
                                     clicking, and the extraction service
                                     actually turning journal text into
                                     real nodes/edges inside storage over
-                                    the compose network). storage's `build:`
+                                    the compose network — plus, this round,
+                                    end-to-end contradiction ranking:
+                                    extraction now gets `RANKING_URL`
+                                    pointed at the `ranking` service by
+                                    name, and `scripts/demo.sh` proves the
+                                    whole loop works through real compose
+                                    networking, not just individually
+                                    on native processes). storage's `build:`
                                     stanza now uses `context: .` (repo root)
                                     + an explicit `dockerfile:` path, not
                                     `./services/storage`, so its Dockerfile
@@ -388,6 +466,31 @@ CortexKernel/
                                     protobuf gencode/runtime version bug
                                     found while wiring up the Python side
                                     (DONE)
+    CONTRADICTION_RANKING.md       — the closed detection-to-ranking loop
+                                    (storage -> extraction -> ranking ->
+                                    feedback -> re-ranking), verified with
+                                    three live processes and curl, plus what
+                                    the new semantic detector does and
+                                    honestly doesn't do (DONE)
+  scripts/
+    demo.sh                        — one-command demo: docker compose up,
+                                    extract a journal entry, seed a direct
+                                    contradiction and a value/behavior one,
+                                    show the ranked list, submit feedback,
+                                    show it re-ranked. Actually run twice
+                                    while building it — first run only
+                                    produced one contradiction category
+                                    (the mock extractor's "values"/"did"
+                                    predicates differ, so it doesn't hit the
+                                    exact-match detector), so the reorder
+                                    wasn't visible; fixed by also seeding a
+                                    same-predicate value/behavior pair
+                                    directly. Second run's feedback
+                                    happened to favor the category that was
+                                    already ranked first by tie-breaking, so
+                                    still no visible change; fixed by
+                                    favoring the other one. Third run showed
+                                    the reorder for real (DONE)
   .gitignore
 ```
 
@@ -583,6 +686,27 @@ status.
   `grpcio-tools` version used for codegen — see the version-mismatch bug
   in Current status and `docs/GRPC.md` for exactly why that pin matters
   and isn't just conservative-for-its-own-sake.
+- **"Semantic" contradiction detection means text-similarity on the
+  current placeholder embeddings, not real semantic understanding —
+  say so every time this comes up, don't let the word "semantic" imply
+  more than it does.** `find_semantic_value_behavior_mismatches()`
+  embeds `predicate + " " + object_name` with the existing hashed-trigram
+  `embed_text()` and flags cosine-similarity above a threshold. It
+  reliably catches near-identical *text* (two edges whose object nodes
+  happen to have the same or very similar name); it will NOT catch
+  genuinely synonymous but differently-worded claims ("my health" vs.
+  "staying healthy" share almost no character trigrams). This is
+  deliberate, minimal, honest infrastructure for a real embedding model
+  to slot into later (item 13) — don't describe it in any doc as "AI
+  understands your contradictions" or similar. `test_semantic_contradictions.cpp`
+  is written to test exactly this (text similarity), not semantics.
+- **The frontend fetches nodes/edges and ranked contradictions as two
+  independent effects in `App.tsx`, not one combined `Promise.all`** —
+  ranked contradictions come from the extraction service, not storage
+  directly, so if extraction is down, the graph should still render;
+  only the contradictions panel should degrade. Don't merge these back
+  into one fetch for "simplicity" — that was the original (wrong)
+  design and it was deliberately split apart this round.
 
 ## Current status (as of last session)
 
@@ -937,6 +1061,71 @@ status.
     `/contradictions`/`/drift`; `grpc_client.py` exists but nothing
     calls it from `app.py` yet; no TLS (insecure credentials only, fine
     for local dev).
+- **Semantic value/behavior mismatch detection: built, tested, exposed
+  over HTTP, and verified.** `find_semantic_value_behavior_mismatches()`
+  embeds `predicate + " " + object_name` (existing `embed_text()`/
+  `SemanticIndex` machinery) for live `StatedValue`/`BehaviorEvidence`
+  edge pairs sharing a subject and flags pairs above a cosine-similarity
+  threshold — catching mismatches that don't share an exact predicate or
+  object, which the original exact-match detector can't. 5 new Catch2
+  tests (110 assertions / 42 test cases total now, up from 104/37).
+  Exposed at `GET /contradictions/semantic?threshold=0.5`, verified over
+  real HTTP: two edges pointing at differently-`object_id`'d but
+  identically-named ("personal health") nodes were correctly flagged,
+  and a `threshold=1.1` query correctly returned nothing. **Be precise
+  in any future write-up**: this is text-similarity on a placeholder
+  embedding, not real semantic understanding — see the design-decision
+  entry above and `docs/CONTRADICTION_RANKING.md`.
+- **The RL ranking loop is closed, end to end, verified with three live
+  processes plus a real script run against docker-compose — this had
+  been flagged as "not wired into any real flow" in every single prior
+  round.** `services/extraction/ranking_client.py` converts storage's
+  `/contradictions` output into the bandit's `{id, category, confidence}`
+  shape, calls ranking's `/rank`, and re-orders the original
+  contradiction objects by the result; `submit_feedback()` forwards to
+  `/feedback`. New endpoints on `app.py`: `GET /contradictions/ranked`,
+  `POST /feedback`. **Verified twice, not once**:
+  1. Ran `storage_server`, `ranking/service.py`, and `extraction/app.py`
+     as three real native processes. Seeded a direct contradiction and a
+     value/behavior one. Called `/contradictions/ranked` (both present).
+     Submitted feedback favoring `value_behavior` over `direct`. Called
+     `/contradictions/ranked` again — **the order actually flipped**,
+     confirmed in the raw JSON response, not inferred from reading code.
+  2. Wrote `scripts/demo.sh`, a one-command `docker compose up` +
+     curl-driven walkthrough of the same flow. **It did not work
+     correctly on the first two runs** — worth recording exactly why:
+     first run only produced one contradiction category (the mock
+     extractor's "I value X"/"I worked on Y" produces `values`/`did` as
+     different predicates, so that pair never hits the exact-match
+     detector at all), so there was nothing to visibly reorder; fixed by
+     also seeding a same-predicate `StatedValue`/`BehaviorEvidence` pair
+     directly via the gateway. Second run showed two categories but the
+     feedback happened to favor whichever one was already ranked first
+     by tie-breaking (both edges had `confidence=1.0`, and the bandit's
+     value estimates start at 0 for everyone, so ties broke by whatever
+     order storage's `/contradictions` endpoint happened to return them
+     in), so still no visible change; fixed by feeding reward to the
+     category that *wasn't* already first. Third run showed the flip.
+     The script now also documents, for anyone who runs it, that the
+     bandit explores randomly ~10% of the time by design (unseeded
+     `EpsilonGreedyRanker(epsilon=0.1)` in `service.py`), so an
+     occasional non-flip on a given run is expected behavior, not a bug.
+  3. Wired the frontend into the same loop: `App.tsx` now calls
+     `fetchRankedContradictions()` instead of the raw `fetchContradictions()`,
+     and each item gets a new `FeedbackButtons` component
+     ("Useful"/"Dismiss") wired to `submitFeedback()` + a re-fetch.
+     Verified via a clean `tsc -b && vite build` only — no headless
+     browser available to actually click the buttons and watch the DOM
+     update, same caveat as the original frontend work.
+- New Python test coverage this round: `test_grpc_client.py` (4 tests,
+  closing a real gap — `grpc_client.py` had zero tests before this),
+  `test_ranking_client.py` (3 tests), `test_app_ranking.py` (3 tests,
+  and building it surfaced a real mocking bug — patching `app.httpx.Client`
+  with a replacement that itself called `httpx.Client(...)` created
+  infinite self-reference, since `app.httpx` and the top-level `httpx`
+  import are the same module object; fixed with a plain `MagicMock`).
+  Full Python count: 38 `unittest` cases across ranking/gateway/extraction,
+  up from 28.
 
 ## Roadmap (prioritized, in order)
 
@@ -980,30 +1169,34 @@ status.
     Surya present to supply a key, and expect the prompt/parsing to need
     at least one iteration — LLM output not perfectly matching the
     expected JSON schema is the realistic failure mode.
-13. Swap `embed_text()`'s hashed-trigram placeholder for real embeddings
-    (an actual embedding model or API call) and wire `SemanticIndex` into
-    `ContradictionDetector` so semantically-equivalent claims (not just
-    exact predicate/object string matches) get flagged — this is what
-    turns the vector index from a standalone module into an actual
-    ML-infra feature of the product. NOT STARTED (same API-key blocker
-    as item 12).
+13. ~~Wire `SemanticIndex` into `ContradictionDetector`~~ — DONE
+    (`find_semantic_value_behavior_mismatches()`, exposed at
+    `GET /contradictions/semantic`). **Still open, and this is the part
+    that actually matters**: swap `embed_text()`'s hashed-trigram
+    placeholder for real embeddings (an actual embedding model or API
+    call) — NOT STARTED, blocked on the same missing API key as item 12.
+    Until that happens, the wiring is real but what it catches is
+    text-similarity, not semantic equivalence — don't overstate this on
+    a resume or in conversation; see the design-decision entry on this.
 14. ~~Persist the bandit's learned value estimates~~ — DONE
     (`persistence.py`, wired into `service.py`, verified across a real
-    restart). ~~Add a Docker entry so it isn't a manually-started
-    script~~ — DONE (`services/extraction/ranking/Dockerfile`, part of
-    `docker-compose.yml`). **Still open**: actually call `service.py`'s
-    `POST /rank`/`POST /feedback` from somewhere real. The extraction
-    service now exists (item 12) but doesn't call ranking yet — natural
-    next step is `extract-and-store` (or a new endpoint) also fetching
-    `/contradictions` from storage and posting them to ranking's
-    `/rank`, closing the loop between all three services.
+    restart). ~~Add a Docker entry~~ — DONE. ~~Actually call
+    `service.py`'s `POST /rank`/`POST /feedback` from somewhere real~~ —
+    **DONE.** `ranking_client.py` + new `app.py` endpoints
+    (`GET /contradictions/ranked`, `POST /feedback`) close this loop for
+    real — verified with three live processes (the ranking actually
+    flipped after feedback) and again via `scripts/demo.sh` against
+    docker-compose. See Current status for the two demo-script bugs
+    found and fixed along the way (not everything worked on the first
+    try, and that's recorded honestly rather than glossed over).
 15. ~~gRPC + Protocol Buffers~~ — DONE for nodes/edges (`AddNode`,
     `AddEdge`, `GetNode`), verified both natively (Homebrew, in-process
     Catch2 tests against a real server) and inside Docker (a real
     version-mismatch bug and a real missing-shared-libs bug, both found
     and fixed — see Current status and `docs/GRPC.md`). **Still open**:
     no gRPC path for contradictions/drift, and `grpc_client.py` isn't
-    called from `app.py`'s actual extraction flow yet — it's available,
+    called from `app.py`'s actual extraction flow yet (it calls storage
+    over REST, not gRPC) — it's available,
     not integrated.
 16. ~~Redis: caching layer for storage's hot read paths~~ — DONE
     (`RedisClient` + `NodeCache`, wired into `POST/GET /nodes`), verified
@@ -1055,12 +1248,12 @@ status.
 22. ~~React + TypeScript + D3.js web UI visualizing the graph~~ — DONE,
     built and type-checked (see Current status for the exact verification
     and its one honest gap — never opened in an actual browser this
-    session). **Still open**: it doesn't yet surface contradictions
-    ranked by the bandit — right now `ContradictionsPanel` just lists
-    them in whatever order `/contradictions` returns; wiring in
-    `EpsilonGreedyRanker` would mean either storage calling the ranking
-    service before responding, or the frontend calling both APIs and
-    merging client-side.
+    session). ~~Surface contradictions ranked by the bandit~~ — DONE:
+    `App.tsx` calls extraction's `/contradictions/ranked` instead of
+    storage's raw `/contradictions`, and `ContradictionsPanel` has
+    `FeedbackButtons` wired to `submitFeedback()` + a re-fetch. Same
+    "never clicked in an actual browser" caveat as the rest of the
+    frontend applies here too.
 23. ~~Full README rewrite~~ — DONE: `README.md` (badges, Mermaid diagram,
     quickstart, tech stack table), plus `LICENSE` (MIT), `CHANGELOG.md`
     (built from real `git log`, not invented), and a `docs/` folder

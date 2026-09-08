@@ -28,9 +28,11 @@ services:
       - "8082:8082"
     environment:
       STORAGE_URL: http://storage:8080
+      RANKING_URL: http://ranking:8081
       EXTRACTION_BACKEND: mock
     depends_on:
       - storage
+      - ranking
 
   gateway:
     build: ./services/gateway

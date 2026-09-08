@@ -203,6 +203,25 @@ int main() {
         res.set_content(result.dump(), "application/json");
     });
 
+    svr.Get("/contradictions/semantic", [&store](const httplib::Request& req, httplib::Response& res) {
+        float threshold = 0.5f;
+        if (req.has_param("threshold")) {
+            threshold = std::stof(req.get_param_value("threshold"));
+        }
+        kg::ContradictionDetector detector(store);
+        json result = json::array();
+        for (const auto& c : detector.find_semantic_value_behavior_mismatches(threshold)) {
+            result.push_back({
+                {"type", "semantic_value_behavior"},
+                {"subject_id", c.subject_id},
+                {"predicate", c.predicate},
+                {"edge_a", kg::edge_to_json(*c.edge_a)},
+                {"edge_b", kg::edge_to_json(*c.edge_b)}
+            });
+        }
+        res.set_content(result.dump(), "application/json");
+    });
+
     svr.Get(R"(/drift/([^/]+)/([^/]+))", [&store](const httplib::Request& req, httplib::Response& res) {
         std::string subject_id = req.matches[1];
         std::string predicate = req.matches[2];

@@ -1,4 +1,5 @@
 #include "../include/contradiction_detector.hpp"
+#include "../include/semantic_index.hpp"
 
 #include <algorithm>
 #include <map>
@@ -38,6 +39,11 @@ std::unordered_map<std::string, const Edge*> first_edge_per_object(const std::ve
         result.emplace(edge->object_id, edge);
     }
     return result;
+}
+
+std::string object_display_text(const GraphStore& store, const std::string& object_id) {
+    const Node* node = store.get_node(object_id);
+    return node != nullptr ? node->name : object_id;
 }
 
 }
@@ -89,6 +95,50 @@ std::vector<Contradiction> ContradictionDetector::find_value_behavior_mismatches
             }
         }
     }
+    return result;
+}
+
+std::vector<Contradiction> ContradictionDetector::find_semantic_value_behavior_mismatches(
+    float similarity_threshold) const {
+    std::map<std::string, std::vector<const Edge*>> stated_by_subject;
+    std::map<std::string, std::vector<const Edge*>> behavior_by_subject;
+
+    for (const Edge* edge : store_.live_edges()) {
+        if (edge->edge_class == EdgeClass::StatedValue) {
+            stated_by_subject[edge->subject_id].push_back(edge);
+        } else if (edge->edge_class == EdgeClass::BehaviorEvidence) {
+            behavior_by_subject[edge->subject_id].push_back(edge);
+        }
+    }
+
+    std::vector<Contradiction> result;
+    for (const auto& entry : stated_by_subject) {
+        const std::string& subject_id = entry.first;
+        auto behavior_it = behavior_by_subject.find(subject_id);
+        if (behavior_it == behavior_by_subject.end()) {
+            continue;
+        }
+
+        for (const Edge* stated_edge : entry.second) {
+            std::string stated_text = stated_edge->predicate + " " + object_display_text(store_, stated_edge->object_id);
+            Embedding stated_embedding = embed_text(stated_text);
+
+            for (const Edge* behavior_edge : behavior_it->second) {
+                if (stated_edge->object_id == behavior_edge->object_id &&
+                    stated_edge->predicate == behavior_edge->predicate) {
+                    continue;
+                }
+                std::string behavior_text =
+                    behavior_edge->predicate + " " + object_display_text(store_, behavior_edge->object_id);
+                Embedding behavior_embedding = embed_text(behavior_text);
+
+                if (cosine_similarity(stated_embedding, behavior_embedding) >= similarity_threshold) {
+                    result.push_back({subject_id, stated_edge->predicate, stated_edge, behavior_edge});
+                }
+            }
+        }
+    }
+
     return result;
 }
 

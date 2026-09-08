@@ -50,3 +50,8 @@ class ExtractionResult(BaseModel):
 class ExtractRequest(BaseModel):
     text: str
     source_ref: str = ""
+
+
+class FeedbackRequest(BaseModel):
+    category: str
+    reward: float
