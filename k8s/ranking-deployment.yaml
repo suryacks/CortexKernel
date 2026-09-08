@@ -1,0 +1,27 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cortexkernel-ranking
+  labels:
+    app: cortexkernel-ranking
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: cortexkernel-ranking
+  template:
+    metadata:
+      labels:
+        app: cortexkernel-ranking
+    spec:
+      containers:
+        - name: ranking
+          image: cortexkernel-ranking:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8081
+          readinessProbe:
+            tcpSocket:
+              port: 8081
+            initialDelaySeconds: 2
+            periodSeconds: 5

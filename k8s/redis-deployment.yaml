@@ -1,0 +1,26 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cortexkernel-redis
+  labels:
+    app: cortexkernel-redis
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: cortexkernel-redis
+  template:
+    metadata:
+      labels:
+        app: cortexkernel-redis
+    spec:
+      containers:
+        - name: redis
+          image: redis:7-alpine
+          ports:
+            - containerPort: 6379
+          readinessProbe:
+            tcpSocket:
+              port: 6379
+            initialDelaySeconds: 2
+            periodSeconds: 5

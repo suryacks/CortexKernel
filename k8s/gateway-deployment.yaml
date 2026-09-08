@@ -1,0 +1,32 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cortexkernel-gateway
+  labels:
+    app: cortexkernel-gateway
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: cortexkernel-gateway
+  template:
+    metadata:
+      labels:
+        app: cortexkernel-gateway
+    spec:
+      containers:
+        - name: gateway
+          image: cortexkernel-gateway:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8090
+          env:
+            - name: STORAGE_URL
+              value: "http://cortexkernel-storage:8080"
+            - name: CORTEXKERNEL_API_KEYS
+              value: "dev-key"
+          readinessProbe:
+            tcpSocket:
+              port: 8090
+            initialDelaySeconds: 2
+            periodSeconds: 5

@@ -20,6 +20,11 @@ spec:
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8080
+          env:
+            - name: REDIS_HOST
+              value: "cortexkernel-redis"
+            - name: REDIS_PORT
+              value: "6379"
           readinessProbe:
             httpGet:
               path: /health

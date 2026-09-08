@@ -1,0 +1,33 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cortexkernel-extraction
+  labels:
+    app: cortexkernel-extraction
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: cortexkernel-extraction
+  template:
+    metadata:
+      labels:
+        app: cortexkernel-extraction
+    spec:
+      containers:
+        - name: extraction
+          image: cortexkernel-extraction:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8082
+          env:
+            - name: STORAGE_URL
+              value: "http://cortexkernel-storage:8080"
+            - name: EXTRACTION_BACKEND
+              value: "mock"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8082
+            initialDelaySeconds: 2
+            periodSeconds: 5

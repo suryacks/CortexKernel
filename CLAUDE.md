@@ -191,16 +191,32 @@ CortexKernel/
                                     testable without real sockets (DONE)
       test_gateway.py             — unit tests for `evaluate_request()` (DONE)
       Dockerfile                  — containerizes the gateway (DONE)
-  k8s/                            — Kubernetes manifests for a local `kind`
-                                    cluster
-    storage-deployment.yaml       — Deployment for the storage service, with
-                                    readiness/liveness probes against
-                                    /health (DONE, YAML-syntax validated
-                                    offline; NOT YET applied to a real
-                                    cluster — no `kind`/cluster available in
-                                    this session, see Current status)
-    storage-service.yaml          — ClusterIP Service exposing it (DONE, same
-                                    caveat as above)
+  k8s/                            — Kubernetes manifests for all 5 services,
+                                    ALL DONE and ALL actually deployed and
+                                    verified against a real local `kind`
+                                    cluster this session — not just written
+                                    (see Current status for the full
+                                    verification transcript)
+    storage-deployment.yaml       — Deployment for storage, readiness/
+                                    liveness probes against /health, now
+                                    also sets REDIS_HOST/REDIS_PORT env vars
+                                    pointing at the redis Service by name
+    storage-service.yaml          — ClusterIP Service exposing it
+    redis-deployment.yaml / redis-service.yaml — `redis:7-alpine`, ClusterIP,
+                                    TCP-socket readiness probe (Redis has no
+                                    HTTP health endpoint)
+    ranking-deployment.yaml / ranking-service.yaml — ClusterIP, TCP-socket
+                                    readiness probe (`service.py` has no
+                                    `/health` route)
+    extraction-deployment.yaml / extraction-service.yaml — ClusterIP, HTTP
+                                    readiness probe against `/health`
+                                    (FastAPI has one), `STORAGE_URL` pointed
+                                    at the storage Service by name
+    gateway-deployment.yaml / gateway-service.yaml — **NodePort**, the one
+                                    deliberately public-facing entry point;
+                                    everything else is ClusterIP
+                                    (internal-only) — a real, intentional
+                                    architecture decision, not an oversight
   helm/cortexkernel/              — Helm chart for the storage service (DONE)
     Chart.yaml, values.yaml       — chart metadata + configurable image/
                                     replica/Redis-host values
@@ -407,6 +423,20 @@ status.
   the metrics/logging hook the matched route template, not just the
   resolved path — worth doing before this ever points at a Prometheus
   server with retention that matters.
+- **Only the gateway is `NodePort`/publicly reachable in Kubernetes —
+  storage, redis, ranking, and extraction are all `ClusterIP`
+  (internal-only)** — the gateway is the intended single entry point
+  (auth + rate limiting live there), so nothing else should be reachable
+  from outside the cluster. Don't flip another service to `NodePort` as
+  a debugging shortcut without reverting it.
+- **A service's one-time startup log (e.g. storage's
+  `redis_reachable="..."`) is a snapshot, not a live status** — in
+  Kubernetes, pod start order isn't guaranteed, so storage can start and
+  ping Redis before Redis's pod is actually accepting connections,
+  logging `redis_reachable="false"` even though caching works correctly
+  moments later once Redis comes up (verified — see Current status).
+  Don't treat that one log line as authoritative; if this needs to be
+  trustworthy later, it should retry/refresh instead of checking once.
 
 ## Current status (as of last session)
 
@@ -606,9 +636,30 @@ status.
   perfectly following a format is the realistic failure mode to expect).
 - `helm` and `kind` were installed via Homebrew this session
   (`brew install helm kind`) — both are now available for future
-  sessions on this machine. `kind` itself was not used yet (creating and
-  deploying to an actual cluster is a bigger chunk of work than this
-  round covered) but is ready to go.
+  sessions on this machine.
+- **`kind` cluster: actually created and deployed to, not just planned.**
+  `kind create cluster --name cortexkernel`, built all 4 custom images
+  (`docker build`), `kind load docker-image` to get them onto the
+  cluster's node (kind can't see the host's local image cache
+  otherwise), `kubectl apply -f k8s/` for all 5 services. **All 5 pods
+  reached `1/1 Running` within ~12 seconds.** Then ran real traffic
+  through it via `kubectl port-forward`: `POST /nodes` and `GET
+  /nodes/:id` through the gateway (auth enforced, request proxied
+  correctly), `POST /extract-and-store` through the extraction service
+  (correctly produced and stored real nodes/edges — `/stats` went from
+  2 to 4 nodes), `POST /rank` against the ranking service directly, and
+  confirmed `X-Cache: HIT` on a repeated node GET — **caching actually
+  worked inside the cluster**, over real pod-to-pod networking via
+  Kubernetes Service DNS names (`cortexkernel-redis`,
+  `cortexkernel-storage`), not just docker-compose's flatter network.
+  Found one honest, real thing along the way: storage's startup log
+  showed `redis_reachable="false"` because its pod started and pinged
+  Redis before Redis's own pod had finished coming up — a real
+  Kubernetes startup-ordering issue, not a bug in the caching logic
+  itself (confirmed caching worked fine moments later, once Redis was
+  actually ready — see the design-decision entry above on this). Cluster
+  was deleted afterward (`kind delete cluster`) — this is not left
+  running, don't assume it exists in future sessions without recreating it.
 - Attempted Terraform for local docker orchestration (parity with
   `docker-compose.yml` but as IaC) and it's currently blocked: Homebrew
   removed `terraform` from homebrew-core over licensing, and the
@@ -695,17 +746,19 @@ status.
     container-to-container networking. Not yet in front of the
     extraction/ranking services too, since there's no real traffic to
     those yet — revisit once item 12 exists.
-18. `kind` cluster set up locally + `kubectl apply` of
-    `k8s/storage-deployment.yaml` and `k8s/storage-service.yaml` (or the
-    Helm chart) against a real cluster; then add extraction + gateway
-    manifests once those services exist. **Partially done**: `kind` and
-    `helm` are now both installed (`brew install helm kind`, this
-    session), the manifests/chart exist and are validated, but no
-    cluster has actually been created or deployed to yet — that's the
-    next concrete step, and it's now unblocked (just not done).
-    `docker-compose.yml` now covers local
-    multi-service orchestration in the meantime, but that's not the same
-    thing as a k8s deployment — don't conflate the two on a resume.
+18. ~~`kind` cluster set up locally + deploy all services~~ — **DONE, for
+    real.** All 5 services (storage, redis, ranking, extraction, gateway)
+    deployed to an actual local `kind` cluster, all 5 pods reached
+    `1/1 Running`, and real traffic was run through it (gateway auth +
+    proxy, extraction writing real data into storage, caching actually
+    hitting Redis over Kubernetes networking) — see Current status for
+    the full transcript. The cluster itself was deleted afterward
+    (`kind delete cluster`) since it's not meant to be left running
+    between sessions; recreating it is `kind create cluster --name
+    cortexkernel && docker build ... && kind load docker-image ... &&
+    kubectl apply -f k8s/`. The Helm chart (item 19) has not been applied
+    to a cluster yet — only the raw `k8s/` manifests were used for this
+    verification.
 19. ~~Helm chart packaging~~ — DONE (`helm/cortexkernel/`), `helm lint` +
     `helm template` verified. Same "not applied to a real cluster"
     caveat as the raw manifests in item 18.
